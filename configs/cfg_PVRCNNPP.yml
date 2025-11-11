@@ -29,13 +29,13 @@ DATASET:
   NAME: 'KRadarDetection_v2_0'
 
   NUM: # Total number of frames, just make this blank
-
+  max_num_voxels: 16000
   path_data:
-    list_dir_kradar: ['/media/donghee/kradar/dataset']
-    split: ['./resources/split/train.txt', './resources/split/test.txt']
-    revised_label_v1_1: './tools/revise_label/kradar_revised_label_v1_1'
-    revised_label_v2_0: './tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL'
-    revised_label_v2_1: './tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility'
+    list_dir_kradar: ['/home/juntingd/research/3DImage/lidar/K-radar/data/sequences']
+    split: ['/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/train.txt', '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/test.txt']
+    revised_label_v1_1: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1'
+    revised_label_v2_0: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL'
+    revised_label_v2_1: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility'
   label_version: 'v2_0'
   item: {
     'calib': True,
@@ -65,7 +65,7 @@ DATASET:
   }
   roi: {
     'filter': True,
-    'xyz': [0.,-16.,-2.,72.,16.,7.6],
+    'xyz': [0., -16., -2. ,72. , 16. ,7.6],
     'keys': ['ldr64'],
     'check_azimuth_for_rdr': False,
     'azimuth_deg': [-180,180],
@@ -367,7 +367,7 @@ OPTIMIZER: # Training
   BATCH_SIZE: 8
   NUM_WORKERS: 4 # 0 for dataloader_error / 4 for batch 16
 
-  MAX_EPOCH: 30
+  MAX_EPOCH: 2
   
   SCHEDULER: 'CosineAnnealingLR' # in [None (empty), 'LambdaLR', 'CosineAnnealingLR']
   TYPE_TOTAL_ITER: 'every' # in ['every', 'all'] / every epoch

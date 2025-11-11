@@ -58,6 +58,7 @@ def sample_points_with_roi(rois, points, sample_radius_with_roi, num_max_points_
         min_dis, min_dis_roi_idx = distance.min(dim=-1)
         roi_max_dim = (rois[min_dis_roi_idx, 3:6] / 2).norm(dim=-1)
         point_mask = min_dis < roi_max_dim + sample_radius_with_roi
+
     else:
         start_idx = 0
         point_mask_list = []
@@ -69,7 +70,7 @@ def sample_points_with_roi(rois, points, sample_radius_with_roi, num_max_points_
             point_mask_list.append(cur_point_mask)
             start_idx += num_max_points_of_part
         point_mask = torch.cat(point_mask_list, dim=0)
-
+    
     sampled_points = points[:1] if point_mask.sum() == 0 else points[point_mask, :]
 
     return sampled_points, point_mask
@@ -218,10 +219,12 @@ class VoxelSetAbstraction(nn.Module):
             sample_radius_with_roi=self.model_cfg.SPC_SAMPLING.SAMPLE_RADIUS_WITH_ROI,
             num_max_points_of_part=self.model_cfg.SPC_SAMPLING.get('NUM_POINTS_OF_EACH_SAMPLE_PART', 200000)
         )
+        # print(f'points: {points.shape}, sampled_points1:{sampled_points.shape}')
         sampled_points = sector_fps(
             points=sampled_points, num_sampled_points=self.model_cfg.NUM_KEYPOINTS,
             num_sectors=self.model_cfg.SPC_SAMPLING.NUM_SECTORS
         )
+        # print(f'points: {points.shape}, sampled_points2:{sampled_points.shape}')
         return sampled_points
 
     def get_sampled_points(self, batch_dict):
@@ -273,6 +276,7 @@ class VoxelSetAbstraction(nn.Module):
 
             keypoints_list.append(keypoints)
 
+        # print(f'keypoints_list.len: {len(keypoints_list[0])}')
         keypoints = torch.cat(keypoints_list, dim=0)  # (B, M, 3) or (N1 + N2 + ..., 4)
         if len(keypoints.shape) == 3:
             batch_idx = torch.arange(batch_size, device=keypoints.device).view(-1, 1).repeat(1, keypoints.shape[1]).view(-1, 1)
@@ -350,6 +354,7 @@ class VoxelSetAbstraction(nn.Module):
 
         """
         keypoints = self.get_sampled_points(batch_dict)
+        # print(f'keypoints shape: {keypoints.shape}')
 
         point_features_list = []
         if 'bev' in self.model_cfg.FEATURES_SOURCE:

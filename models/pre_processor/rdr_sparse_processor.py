@@ -9,11 +9,12 @@ import torch.nn as nn
 
 
 from spconv.pytorch.utils import PointToVoxel
-
+from .upsample import *
 class RadarSparseProcessor(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self, cfg, training = True):
         super(RadarSparseProcessor, self).__init__()
         self.cfg = cfg
+        self.training = cfg.isTraining
 
         self.cfg_dataset_ver2 = self.cfg.get('cfg_dataset_ver2', False)
         if self.cfg_dataset_ver2:
@@ -72,6 +73,25 @@ class RadarSparseProcessor(nn.Module):
             for batch_idx in range(dict_item['batch_size']):
                 corr_ind = torch.where(batch_indices == batch_idx)
                 vox_in = rdr_sparse[corr_ind[0],:]
+
+                if self.training:
+                    # print(f'vox_in shape: {vox_in.shape}')
+                    vox_in = upsample_rdr_sparse_xyzpw_torch(
+                        vox_in,
+                        base_samples_per_point=2,
+                        sigma_xyz=(0.60, 0.90, 0.60),             # [m] ≈ (range, cross-range, vertical)
+                        bev_cell=(0.4, 0.4),                      # [m] BEV grid (dy, dx)
+                        bev_extent=((-40., 40.), (0., 120.)),
+                        density_exponent=1.0,      # set 0.0 to ignore BEV density
+                        include_original=True,
+                        power_mode="multiply",
+                        kernel="gaussian",         # or "sinc2"
+                        sinc_w=0.8,                # ~ lateral mainlobe width (m), if kernel="sinc2"
+                        power_noise_std=0.0,
+                        min_power=0.0,             # clip to nonnegative if your pipeline expects that
+                        max_power=None
+                    )
+                    # print(f'rdr_sparse_data upsampled shape: {vox_in.shape}')
                 
                 voxel_features, voxel_coords, voxel_num_points = self.gen_voxels(vox_in)
                 voxel_batch_idx = torch.full((voxel_coords.shape[0], 1), batch_idx, device=rdr_sparse.device, dtype=torch.int64)

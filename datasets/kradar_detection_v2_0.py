@@ -20,9 +20,9 @@ dict_cfg = dict(
     path_data = dict(
         list_dir_kradar = ['/media/ave/HDD_4_1/gen_2to5', '/media/ave/HDD_4_1/radar_bin_lidar_bag_files/generated_files', '/media/ave/e95e0722-32a4-4880-a5d5-bb46967357d6/radar_bin_lidar_bag_files/generated_files', '/media/ave/4f089d0e-7b60-493d-aac7-86ead9655194/radar_bin_lidar_bag_files/generated_files'],
         split = ['./resources/split/train.txt', './resources/split/test.txt'],
-        revised_label_v1_1 = './tools/revise_label/kradar_revised_label_v1_1',
-        revised_label_v2_0 = './tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL',
-        revised_label_v2_1 = './tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility',
+        revised_label_v1_1 = '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1',
+        revised_label_v2_0 = '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL',
+        revised_label_v2_1 = '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility',
     ),
     label = { # (consider, logit_idx, rgb, bgr)
         'calib':            True,
@@ -61,6 +61,7 @@ class KRadarDetection_v2_0(Dataset):
             cfg_from_yaml = True
             self.cfg=cfg.DATASET
 
+        self.max_voxels = cfg.DATASET.max_num_voxels
         self.label = self.cfg.label
         self.label_version = self.cfg.get('label_version', 'v2_0')
         self.load_label_in_advance = True if self.label.remove_0_obj else False
@@ -92,7 +93,7 @@ class KRadarDetection_v2_0(Dataset):
         list_seqs_w_header = []
         for path_header in path_data.list_dir_kradar:
             list_seqs = os.listdir(path_header)
-            list_seqs_w_header.extend([(seq, path_header) for seq in list_seqs])
+            list_seqs_w_header.extend([(seq, path_header) for seq in list_seqs if seq in ['1']])
         list_seqs_w_header = sorted(list_seqs_w_header, key=lambda x: int(x[0]))
 
         list_dict_item = []
@@ -100,9 +101,11 @@ class KRadarDetection_v2_0(Dataset):
             list_labels = sorted(os.listdir(osp.join(path_header, seq, 'info_label')))
             for label in list_labels:
                 path_label_v1_0 = osp.join(path_header, seq, 'info_label', label)
-                path_label_v1_1 = osp.join(f'./tools/revise_label/kradar_revised_label_v1_1/{seq}_info_label_revised', label)
-                path_label_v2_0 = osp.join(f'./tools/revise_label/kradar_revised_label_v2_0', 'KRadar_refined_label_by_UWIPL', seq, label)
-                path_label_v2_1 = osp.join(f'./tools/revise_label/kradar_revised_label_v2_1', 'KRadar_revised_visibility', seq, label)
+                path_label_v1_1 = osp.join(f'/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1/{seq}_info_label_revised', label)
+                path_label_v2_0 = osp.join(f'/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0', 'KRadar_refined_label_by_UWIPL', seq, label)
+                path_label_v2_1 = osp.join(f'/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_1', 'KRadar_revised_visibility', seq, label)
+                if label not in list_dict_split[int(seq)]:
+                    continue
                 dict_item = dict(
                     meta = dict(
                         header = path_header, seq = seq,
@@ -363,8 +366,8 @@ class KRadarDetection_v2_0(Dataset):
             rdr_sparse = np.load(path_rdr_sparse)
         else: # from cube or tesseract (TODO)
             pass
-        dict_item['rdr_sparse'] = rdr_sparse
         
+        dict_item['rdr_sparse'] = rdr_sparse
         return dict_item
     
     def filter_roi(self, dict_item):

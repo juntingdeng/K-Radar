@@ -223,6 +223,7 @@ class VectorPoolLocalInterpolateModule(nn.Module):
 
         empty_mask = (idx.view(-1, 3)[:, 0] == -1)
         idx.view(-1, 3)[empty_mask] = 0
+        # print(f'idx shape: {idx.shape}, new_xyz_grid_centers shape: {new_xyz_grid_centers.shape}')
 
         interpolated_feats = pointnet2_utils.three_interpolate(support_features, idx.view(-1, 3), weight.view(-1, 3))
         interpolated_feats = interpolated_feats.view(idx.shape[0], idx.shape[1], -1)  # (M1 + M2 ..., num_total_grids, C)
@@ -236,6 +237,7 @@ class VectorPoolLocalInterpolateModule(nn.Module):
 
         new_features = interpolated_feats.view(-1, interpolated_feats.shape[-1])  # ((M1 + M2 ...) * num_total_grids, C)
         new_features[empty_mask, :] = 0
+        # print(f'support_features: {support_features.shape}, interpolated_feats: {interpolated_feats.shape}, new_features: {new_features.shape}')
         if self.mlp is not None:
             new_features = new_features.permute(1, 0)[None, :, :, None]  # (1, C, N1 + N2 ..., 1)
             new_features = self.mlp(new_features)
@@ -377,6 +379,7 @@ class VectorPoolAggregationModule(nn.Module):
             new_xyz=new_xyz, new_xyz_grid_centers=voxel_centers, new_xyz_batch_cnt=new_xyz_batch_cnt
         )  # ((M1 + M2 ...) * total_voxels, C)
 
+        # print(f'new_xyz shape: {new_xyz.shape}, total_voxels: {self.total_voxels}, voxel_features: {voxel_features.shape}')
         voxel_features = voxel_features.contiguous().view(-1, self.total_voxels * voxel_features.shape[-1])
         return voxel_features
 
@@ -411,6 +414,9 @@ class VectorPoolAggregationModule(nn.Module):
         else:
             raise NotImplementedError
 
+        # if vector_features.shape[0] == 1:
+        #     vector_features = torch.vstack([vector_features, vector_features])
+        # print(f"vector_features shape: before: {features.shape} after: {vector_features.shape}")
         vector_features = vector_features.permute(1, 0)[None, :, :]  # (1, num_voxels * C, M1 + M2 ...)
 
         new_features = self.separate_local_aggregation_layer(vector_features)

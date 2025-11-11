@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 class BaseBEVBackbone(nn.Module):
     def __init__(self, model_cfg, input_channels):
         super().__init__()

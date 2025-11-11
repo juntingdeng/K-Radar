@@ -25,13 +25,13 @@ GENERAL:
 ### ----- Sparse Data ----- ###
 # For v1.1
 SPARSE_DATA:
-  NAME: 'rtnh_wider_10p_1'
+  NAME: 'rtnh_wider_01p_1'
   HEADER: 'sprdr'
   COMMENT: 'quantile -> roi'
-  SAVE_FOLDER: '/media/ave/4f089d0e-7b60-493d-aac7-86ead9655194/kradar_gen_sparse_data'
+  SAVE_FOLDER: '/home/juntingd/research/3DImage/lidar/K-radar/data/sequences/gen_sparse_rdr'
 
   NORM_VAL: 1e+13
-  QUANTILE_RATE: 0.1
+  QUANTILE_RATE: 0.001
 # RDR_CUBE.GENERATE_SPARSE_CUBE for v1 
 ### ----- Sparse Data ----- ###
 
@@ -46,9 +46,9 @@ DATASET:
   DIR:
     ### Server room 1 ###
     # The directory order may affect the performance due to sampling order
-    LIST_DIR: ['/media/ave/HDD_4_1/gen_2to5', '/media/ave/HDD_4_1/radar_bin_lidar_bag_files/generated_files', '/media/ave/e95e0722-32a4-4880-a5d5-bb46967357d6/radar_bin_lidar_bag_files/generated_files', '/media/ave/4f089d0e-7b60-493d-aac7-86ead9655194/radar_bin_lidar_bag_files/generated_files']
-    DIR_DOPPLER_CB: '/media/ave/e78bd5a4-c129-4564-aa97-2e14a886444c/doppler_data_from_SB' # Total 2.2 TB
-    DIR_SPARSE_CB: '/media/ave/HDD_4_1/dir_sp_rdr_cube'
+    LIST_DIR: ['../data/sequences']
+    DIR_DOPPLER_CB: '' #'/media/ave/e78bd5a4-c129-4564-aa97-2e14a886444c/doppler_data_from_SB' # Total 2.2 TB
+    DIR_SPARSE_CB: '' #'/media/ave/HDD_4_1/dir_sp_rdr_cube'
     ### Server room 1 ###
 
     ### Lab server 1 ###
@@ -139,7 +139,7 @@ DATASET:
 
       # cfar
       METHOD: 'quantile' # in ['quantile', 'ca-cfar', 'os-cfar']
-      PICK_RATE: 0.1 # quantile / up to 10%
+      PICK_RATE: 0.2 # quantile / up to 10%
 
     CFAR_PARAMS:
       IS_CFAR: False

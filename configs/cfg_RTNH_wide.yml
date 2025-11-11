@@ -24,6 +24,7 @@ GENERAL:
 is_validation_updated: True
 ### ----- General ----- ###
 
+isTraining: True
 ### ----- Dataset ----- ###
 cfg_dataset_ver2: True
 DATASET:
@@ -32,11 +33,11 @@ DATASET:
   NUM: # Total number of frames, just make this blank
 
   path_data:
-    list_dir_kradar: ['/media/donghee/kradar/dataset']
-    split: ['./resources/split/train.txt', './resources/split/test.txt']
-    revised_label_v1_1: './tools/revise_label/kradar_revised_label_v1_1'
-    revised_label_v2_0: './tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL'
-    revised_label_v2_1: './tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility'
+    list_dir_kradar: ['/home/juntingd/research/3DImage/lidar/K-radar/data/sequences']
+    split: ['/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/train.txt', '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/test.txt']
+    revised_label_v1_1: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1'
+    revised_label_v2_0: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL'
+    revised_label_v2_1: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_1/KRadar_revised_visibility'
   label_version: 'v2_0'
   item: {
     'calib': True,
@@ -61,7 +62,9 @@ DATASET:
   }
   rdr_sparse: {
     'processed': True,
-    'dir': '/media/donghee/kradar/rdr_sparse_data/rtnh_wider_1p_1'
+    # 'dir': '../data/rdr_splt_data'
+    'dir': '/home/juntingd/research/3DImage/lidar/K-radar/data/rdr_sparse_data/sparse_radar_tensor_wide_range/rtnh_wider_1p_1'
+    # 'dir': '../data/sequences/gen_sparse_rdr/rtnh_wider_10p_1'
   }
   roi: {
     'filter': True,

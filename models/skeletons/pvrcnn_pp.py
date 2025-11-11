@@ -28,7 +28,7 @@ class VoxelGeneratorWrapper():
                 from spconv.utils import VoxelGenerator
                 self.spconv_ver = 1
             except:
-                from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
+                from spconv.utils import Point2VoxelCPU3d as VoxelGenerator # venv on H100 & T4
                 self.spconv_ver = 2
 
         if self.spconv_ver == 1:

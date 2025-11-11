@@ -33,7 +33,7 @@ class KRadarDetection_v1_1(Dataset):
     def __init__(self, cfg=None, split='train'):
         super().__init__()
         self.cfg = cfg
-
+        self.seqs = []
         ### Load label paths wrt split ###
         # load label paths
         self.split = split # in ['train', 'test']
@@ -42,6 +42,9 @@ class KRadarDetection_v1_1(Dataset):
         for dir_seq in self.cfg.DATASET.DIR.LIST_DIR:
             list_seq = os.listdir(dir_seq)
             for seq in list_seq:
+                if seq != '1': #<= seq <= '58' or seq == '58':
+                    continue
+                self.seqs.append(int(seq))
                 seq_label_paths = sorted(glob(osp.join(dir_seq, seq, 'info_label', '*.txt')))
                 seq_label_paths = list(filter(lambda x: (x.split('/')[-1].split('.')[0] in self.dict_split[seq]), seq_label_paths))
                 self.list_path_label.extend(seq_label_paths)
@@ -813,7 +816,6 @@ class KRadarDetection_v1_1(Dataset):
             os.makedirs(dir_save, exist_ok=True)
             path_save = os.path.join(dir_save, name_save_file)
             # print(path_save)
-
             np.save(path_save, sparse_rdr_cube)    
     ### Generate sparse rdr cube ###
 
@@ -848,12 +850,12 @@ class KRadarDetection_v1_1(Dataset):
                 path_radar_sparse_cube = '/'+os.path.join(*path_header, self.name_sp_cube, 'spcube_'+radar_idx+'.npy')
 
         ### Folders in seq.zip file
-        path_radar_tesseract = '/'+os.path.join(*path_header, 'radar_tesseract', 'tesseract_'+radar_idx+'.mat')
-        path_radar_cube = '/'+os.path.join(*path_header, 'radar_zyx_cube', 'cube_'+radar_idx+'.mat')
-        path_lidar_pc_64 = '/'+os.path.join(*path_header, 'os2-64', 'os2-64_'+lidar_idx+'.pcd')
-        path_cam_front = '/'+os.path.join(*path_header, 'cam-front', 'cam-front_'+camf_idx+'.png')
-        path_calib = '/'+os.path.join(*path_header, 'info_calib', 'calib_radar_lidar.txt')
-        path_desc = '/'+os.path.join(*path_header, 'description.txt')
+        path_radar_tesseract = os.path.join(*path_header, 'radar_tesseract', 'tesseract_'+radar_idx+'.mat')
+        path_radar_cube = os.path.join(*path_header, 'radar_zyx_cube', 'cube_'+radar_idx+'.mat')
+        path_lidar_pc_64 = os.path.join(*path_header, 'os2-64', 'os2-64_'+lidar_idx+'.pcd')
+        path_cam_front = os.path.join(*path_header, 'cam-front', 'cam-front_'+camf_idx+'.png')
+        path_calib = os.path.join(*path_header, 'info_calib', 'calib_radar_lidar.txt')
+        path_desc = os.path.join(*path_header, 'description.txt')
 
         ### In different folder
         path_radar_cube_doppler = None
@@ -1049,8 +1051,8 @@ class KRadarDetection_v1_1(Dataset):
         os.makedirs(dir_save_folder, exist_ok=True)
         name_header = cfg_sparse_data.HEADER
 
-        for idx in range(58):
-            os.makedirs(osp.join(dir_save_folder, f'{idx+1}'), exist_ok=True)
+        for idx in self.seqs:
+            os.makedirs(osp.join(dir_save_folder, f'{idx}'), exist_ok=True)
         
         len_total_data = self.__len__()
         norm_val = float(cfg_sparse_data.NORM_VAL) # 1e+13
@@ -1131,6 +1133,7 @@ class KRadarDetection_v1_1(Dataset):
             seq = splitted[-3]
             idx_data = splitted[-1].split('.')[0].split('_')[1]
             path_save = osp.join(dir_save_folder, seq, f'{name_header}_{idx_data}.npy')
+            # print(path_save)
             np.save(path_save, sparse_rdr_cube)
     ### Pre-processing for RTNH & RTNH+ ###
 
@@ -1139,7 +1142,7 @@ if __name__ == '__main__':
     import yaml
     from easydict import EasyDict
 
-    path_cfg = './configs/sparse_rdr_data_generation/cfg_gen_wider_rtnh_1p.yml'
+    path_cfg = './configs/sparse_rdr_data_generation/cfg_gen_wider_rtnh_10p.yml'
 
     f = open(path_cfg, 'r')
     try:
@@ -1152,5 +1155,5 @@ if __name__ == '__main__':
     # dataset = KRadarDetection_v1_1(cfg=cfg, split='train')
     # dataset.generate_sparse_rdr_cube_for_wider_rtnh(vis_for_check=False, vis_in_sampled_sphere=False)
 
-    dataset = KRadarDetection_v1_1(cfg=cfg, split='test')
+    dataset = KRadarDetection_v1_1(cfg=cfg, split='train')
     dataset.generate_sparse_rdr_cube_for_wider_rtnh(vis_for_check=False, vis_in_sampled_sphere=False)

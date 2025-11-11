@@ -201,6 +201,8 @@ class RoIHeadTemplate(nn.Module):
         loss_cfgs = self.model_cfg.LOSS_CONFIG
         rcnn_cls = forward_ret_dict['rcnn_cls']
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].view(-1)
+        # print(f'rcnn_cls range: {rcnn_cls.min()}~ {rcnn_cls.max()}')
+        # print(f'rcnn_cls_labels range: {rcnn_cls_labels.min()}~ {rcnn_cls_labels.max()}')
         if loss_cfgs.CLS_LOSS == 'BinaryCrossEntropy':
             rcnn_cls_flat = rcnn_cls.view(-1)
             batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), reduction='none')

@@ -8,6 +8,7 @@ from models.model_utils import centernet_utils
 from utils import loss_utils
 from functools import partial
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class SeparateHead(nn.Module):
     def __init__(self, input_channels, sep_head_dict, init_bias=-2.19, use_bias=False, norm_func=None):
@@ -60,12 +61,12 @@ class CenterHead(nn.Module):
         self.class_names = class_names
         self.class_names_each_head = []
         self.class_id_mapping_each_head = []
-
+        
         for cur_class_names in self.model_cfg.CLASS_NAMES_EACH_HEAD:
             self.class_names_each_head.append([x for x in cur_class_names if x in class_names])
             cur_class_id_mapping = torch.from_numpy(np.array(
                 [self.class_names.index(x) for x in cur_class_names if x in class_names]
-            )).cuda()
+            )).to(device)
             self.class_id_mapping_each_head.append(cur_class_id_mapping)
 
         total_classes = sum([len(x) for x in self.class_names_each_head])
@@ -296,7 +297,7 @@ class CenterHead(nn.Module):
 
     def generate_predicted_boxes(self, batch_size, pred_dicts):
         post_process_cfg = self.model_cfg.POST_PROCESSING
-        post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).cuda().float()
+        post_center_limit_range = torch.tensor(post_process_cfg.POST_CENTER_LIMIT_RANGE).float().to(device)
 
         ret_dict = [{
             'pred_boxes': [],

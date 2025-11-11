@@ -1,0 +1,8 @@
+*logs*
+*build*
+*.pt
+*.pyc
+*.txt
+*.so
+*.egg*
+*.yml
