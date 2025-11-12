@@ -22,7 +22,7 @@ numba_logger = logging.getLogger('numba')
 numba_logger.setLevel(logging.ERROR)
 
 from torch.utils.tensorboard import SummaryWriter
-
+from spconv.pytorch import SparseConvTensor
 from utils.util_pipeline import *
 from utils.util_point_cloud import *
 from utils.util_config import cfg, cfg_from_yaml_file
@@ -34,6 +34,7 @@ from utils.kitti_eval.eval_revised import get_official_eval_result_revised
 
 from utils.util_optim import clip_grad_norm_
 from depthEst.KDataset import *
+from models.generatives.unet import *
 
 d = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -60,6 +61,8 @@ class Validate:
         self.val_per_epoch_full = self.cfg.VAL.VAL_PER_EPOCH_FULL
         self.Nvoxels = self.cfg.DATASET.max_num_voxels
         self.vsize = vsize #zyx
+        x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
+        self.origin = torch.tensor([x_min, y_min, z_min]).to(d)
 
         self.val_keyword = self.cfg.VAL.CLASS_VAL_KEYWORD # for kitti_eval
         list_val_keyword_keys = list(self.val_keyword.keys()) # same order as VAL.CLASS_VAL_KEYWORD.keys()
@@ -492,23 +495,48 @@ class Validate:
                 # rdr_data = rdr_data.to(d)
                 # ldr_data = ldr_data.to(d)
 
-                input = torch.concatenate([rdr_data, dict_datum['sp_indices'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1) #(N, 4+3)
-                gt = torch.concatenate([ldr_data, dict_datum['voxel_coords'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1)
+                # input = torch.concatenate([rdr_data, dict_datum['sp_indices'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1) #(N, 4+3)
+                # gt = torch.concatenate([ldr_data, dict_datum['voxel_coords'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1)
 
-                output = self.gen_net(input)
-                output = lmin + output*(lmax - lmin)
-                if (torch.isnan(output)).any():
-                    print(f'output has nan')
+                # output = self.gen_net(input)
+                # output = lmin + output*(lmax - lmin)
+                # if (torch.isnan(output)).any():
+                #     print(f'output has nan')
 
-                # print(f"batch_dict['voxels'] shape, before: {batch_dict['voxels'].shape}, after: {output.shape}")
-                _output = output.detach()
-                dict_datum['voxels'] = _output[:, :, :4].contiguous().float().to(d)
-                dict_datum['voxel_coords'][:, 1] = _output[:, 0, 4].int().clamp(1, self.vsize[0]-1)
-                dict_datum['voxel_coords'][:, 2] = _output[:, 0, 5].int().clamp(1, self.vsize[1]-1)
-                dict_datum['voxel_coords'][:, 3] = _output[:, 0, 6].int().clamp(1, self.vsize[2]-1)
-                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                # print(f"batch_dict['voxels']:{batch_dict['voxels'].shape}, batch_dict['voxel_coords']:{batch_dict['voxel_coords'].shape}")
+                # # print(f"batch_dict['voxels'] shape, before: {batch_dict['voxels'].shape}, after: {output.shape}")
+                # _output = output.detach()
+                # dict_datum['voxels'] = _output[:, :, :4].contiguous().float().to(d)
+                # dict_datum['voxel_coords'][:, 1] = _output[:, 0, 4].int().clamp(1, self.vsize[0]-1)
+                # dict_datum['voxel_coords'][:, 2] = _output[:, 0, 5].int().clamp(1, self.vsize[1]-1)
+                # dict_datum['voxel_coords'][:, 3] = _output[:, 0, 6].int().clamp(1, self.vsize[2]-1)
+                # dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                # # print(f"batch_dict['voxels']:{batch_dict['voxels'].shape}, batch_dict['voxel_coords']:{batch_dict['voxel_coords'].shape}")
                 
+                # dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
+
+                radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
+                                        indices=dict_datum['sp_indices'].int(), 
+                                        spatial_shape=[self.vsize[2], self.vsize[1], self.vsize[0]], 
+                                        batch_size=1)
+                
+                out = self.gen_net(radar_st) 
+
+                pred, occ, offs, attrs = out['st'], out['logits'], out['offs'], out['attrs']
+
+                voxel_center_xyz = self.origin + (radar_st.indices[:, 1:4].float() + 0.5) * torch.tensor(self.vsize).to(d)  # grid center
+                pred_offset_m = offs * torch.tensor(self.vsize).to(d)  # scale voxel-units → meters
+                voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+                # print(voxel_center_xyz.shape, pred_offset_m.shape)
+                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+                _pred_indices = pred.indices.detach()
+                _attrs = attrs.detach()
+                if (torch.isnan(_attrs)).any():
+                    print(f'_attrs has nan')
+                dict_datum['voxels'] = _attrs.contiguous().float().to(d)
+                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.vsize[0]-1)
+                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.vsize[1]-1)
+                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.vsize[2]-1)
+                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
                 dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
                 
                 dict_out = self.dect_net(dict_datum)

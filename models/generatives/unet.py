@@ -22,9 +22,12 @@ class SparseUNet3D(nn.Module):
       - Decoder: upsample (inverse conv) -> skip concat -> subm
     Use distinct indice_key per level (e.g., "subm0", "down0", "up0").
     """
-    def __init__(self, in_ch=4, base_ch=32, num_classes=20):
+    def __init__(self, in_ch=20, base_ch=32, K=5, F=4):
         super().__init__()
         C = base_ch
+        self.K, self.F = K, F
+        # outputs: [exist K] + [offsets K*3] + [attrs K*F]
+        self.out_ch = K + K*3 + K*F
 
         # ---------------- Encoder ----------------
         self.enc0 = subm_block(in_ch, C, indice_key="subm0")
@@ -55,39 +58,45 @@ class SparseUNet3D(nn.Module):
 
         # Head: point-wise (submanifold) 1x1 "conv"
         self.pred_head = spconv.SparseSequential(
-            SubMConv3d(base_ch, 4, kernel_size=1, bias=True, indice_key="head_feat")  # dx,dy,dz,i
+            SubMConv3d(base_ch, self.out_ch, kernel_size=1, bias=True, indice_key="head_feat")  # dx,dy,dz,i
         )
         self.occ_head  = spconv.SparseSequential(
             SubMConv3d(base_ch, 1, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
         )
 
 
+    # @staticmethod
+    # def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
+    #     # Ensure coordinates/shape align before concatenation
+    #     if not (a.indices.shape == b.indices.shape and torch.equal(a.indices, b.indices)):
+    #         raise RuntimeError("Skip connection coords mismatch; check indice_key/stride path.")
+    #     feats = torch.cat([a.features, b.features], dim=1)
+    #     return SparseConvTensor(
+    #         feats, a.indices, a.spatial_shape, a.batch_size, grid=a.grid
+    #     )
     @staticmethod
     def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
-        # Ensure coordinates/shape align before concatenation
         if not (a.indices.shape == b.indices.shape and torch.equal(a.indices, b.indices)):
             raise RuntimeError("Skip connection coords mismatch; check indice_key/stride path.")
         feats = torch.cat([a.features, b.features], dim=1)
-        return SparseConvTensor(
-            feats, a.indices, a.spatial_shape, a.batch_size, grid=a.grid
-        )
+        # Preserve indices, spatial_shape, *and* indice_dict
+        return a.replace_feature(feats)
 
     def forward(self, x: SparseConvTensor):
         # Encoder
         e0 = self.enc0(x)                       # subm @ full res
         d0 = self.down0(e0); d0F = self.act0(self.bn0(d0.features))
-        d0 = SparseConvTensor(d0F, d0.indices, d0.spatial_shape, d0.batch_size, grid=d0.grid)
+        d0 = d0.replace_feature(self.act0(self.bn0(d0.features)))
 
         e1 = self.enc1(d0)
         d1 = self.down1(e1); d1F = self.act1(self.bn1(d1.features))
-        d1 = SparseConvTensor(d1F, d1.indices, d1.spatial_shape, d1.batch_size, grid=d1.grid)
+        d1 = d1.replace_feature(self.act1(self.bn1(d1.features)))
 
         e2 = self.enc2(d1)
         d2 = self.down2(e2); d2F = self.act2(self.bn2(d2.features))
-        d2 = SparseConvTensor(d2F, d2.indices, d2.spatial_shape, d2.batch_size, grid=d2.grid)
+        d2 = d2.replace_feature(self.act2(self.bn2(d2.features)))
 
         b  = self.bottleneck(d2)
-
         # Decoder
         u2 = self.up2(b)              # up to e2 grid (shares "down2" rulebook)
         c2 = self._cat_if_same_coords(u2, e2)
@@ -101,8 +110,18 @@ class SparseUNet3D(nn.Module):
         c0 = self._cat_if_same_coords(u0, e0)
         c0 = self.dec0(c0)
 
-        out = self.head(c0)           # logits per active voxel
-        return out
+        # occ = self.occ_head(c0)           # logits per active voxel
+        pred = self.pred_head(c0)
+
+        N = pred.features.size(0)
+        C = self.out_ch
+        K, F = self.K, self.F
+        feats = pred.features
+        # split into slots
+        logits = feats[:, 0:K]                               # [N, K]
+        offs   = feats[:, K:K+3*K].view(N, K, 3)             # [N, K, 3] (voxel units)
+        attrs  = feats[:, K+3*K:K+3*K+K*F].view(N, K, F)     # [N, K, F]
+        return {"st": pred, "logits": logits, "offs": offs, "attrs": attrs}
 
 def _hash_zyx(b,z,y,x, Z,Y,X):
     return (((b * Z + z) * Y + y) * X + x)
@@ -118,65 +137,143 @@ def make_offsets(R):
     offs = torch.stack([dz.reshape(-1), dy.reshape(-1), dx.reshape(-1)], dim=1)  # [K,3], K=(2R+1)^3
     return offs
 
+def _safe_membership_via_searchsorted(sorted_keys: torch.Tensor,
+                                      query: torch.Tensor):
+    """
+    sorted_keys: 1D int64, ascending, device=CUDA
+    query      : 1D int64, device matches sorted_keys
+    Returns: (is_member [N], pos [N], gathered_equal [N])
+      - is_member: bool mask indicating sorted_keys contains query[i]
+      - pos: insertion positions from searchsorted (int64)
+      - gathered_equal: values gathered from sorted_keys at pos (valid only where is_member)
+    """
+    assert sorted_keys.dim() == 1 and query.dim() == 1
+    pos = torch.searchsorted(sorted_keys, query)  # [N], int64
+    # valid where 0 <= pos < len(sorted_keys)
+    valid = (pos >= 0) & (pos < sorted_keys.numel())
+
+    # gather only at valid positions
+    gathered = torch.empty_like(query)
+    gathered[valid] = sorted_keys[pos[valid]]
+
+    is_member = torch.zeros_like(valid, dtype=torch.bool)
+    is_member[valid] = (gathered[valid] == query[valid])
+    return is_member, pos, gathered
+
 @torch.no_grad()
 def local_match(radar: SparseConvTensor, lidar: SparseConvTensor, R=1):
-    """
-    For each radar index row, pick nearest LiDAR voxel within Chebyshev radius R.
-    Returns:
-      matched_mask [Nr] (bool): True if a LiDAR neighbor exists
-      gt_offsets   [Nr,3]      : (dz,dy,dx) from voxel center to LiDAR-center voxel (grid units)
-      gt_feat      [Nr,C]      : LiDAR features at the matched voxel
-    """
     assert tuple(radar.spatial_shape) == tuple(lidar.spatial_shape)
-    Z,Y,X = radar.spatial_shape
+    Z, Y, X = radar.spatial_shape
     device = radar.indices.device
+    # ---- build LiDAR hash and sort
+    hL = build_hash(lidar.indices.to(torch.int64), (Z, Y, X)).to(device)
+    hL_sorted, ordL = torch.sort(hL)  # IMPORTANT: use sorted keys for searchsorted
 
-    # Hash LiDAR coords for O(1) membership
-    h_lidar = build_hash(lidar.indices, (Z,Y,X))
-    # Sort for binary search
-    hL, ordL = torch.sort(h_lidar)
-
-    offs = make_offsets(R).to(device)
-    Nr = radar.indices.size(0)
-    b,z,y,x = (radar.indices[:,0], radar.indices[:,1], radar.indices[:,2], radar.indices[:,3])
-
-    # Enumerate all neighbor candidates for each radar row
-    # shape: [Nr, K, 4]
+    # ---- enumerate radar neighbor candidates
+    offs = make_offsets(R).to(device)                    # [K,3], int64
+    b,z,y,x = radar.indices[:,0], radar.indices[:,1], radar.indices[:,2], radar.indices[:,3]
     K = offs.size(0)
     bz = b[:,None]
     zz = (z[:,None] + offs[None,:,0]).clamp_(0, Z-1)
     yy = (y[:,None] + offs[None,:,1]).clamp_(0, Y-1)
     xx = (x[:,None] + offs[None,:,2]).clamp_(0, X-1)
 
-    cand_hash = _hash_zyx(bz, zz, yy, xx, Z,Y,X).reshape(Nr*K)
+    cand_hash = _hash_zyx(bz, zz, yy, xx, Z, Y, X).reshape(-1).to(torch.int64)  # [Nr*K]
 
-    # searchsorted to test membership
-    pos = torch.searchsorted(hL, cand_hash)
-    hit = (pos < hL.numel()) & (hL[pos] == cand_hash)
-    hit = hit.view(Nr, K)
+    # ---- safe membership check (NO out-of-bounds indexing)
+    is_member, pos, gathered = _safe_membership_via_searchsorted(hL_sorted, cand_hash)
+    hit = is_member.view(-1, K)                                           # [Nr,K]
 
-    # If multiple hits, pick the **closest in L1 grid distance** (or first)
-    dL1 = offs.abs().sum(dim=1)[None,:].expand(Nr, K)  # [Nr,K]
+    # choose the closest neighbor in L1 grid distance among hits
+    dL1 = offs.abs().sum(dim=1)[None,:].expand(hit.size(0), K)            # [Nr,K]
     dL1_masked = torch.where(hit, dL1, torch.full_like(dL1, 1e9))
-    best_k = dL1_masked.argmin(dim=1)                  # [Nr]
-    matched_mask = dL1_masked[torch.arange(Nr, device=device), best_k] < 1e9
+    best_k = dL1_masked.argmin(dim=1)                                     # [Nr]
+    matched_mask = dL1_masked[torch.arange(hit.size(0), device=device), best_k] < 1e9
 
-    # Map best_k -> LiDAR row index
-    flat_idx = (torch.arange(Nr, device=device) * K + best_k)
-    pos_flat = pos.view(-1)[flat_idx]
-    lidar_row = ordL[pos_flat]     # [Nr] (undefined where not matched, but masked)
+    # map (q,k) -> lidar row indices using sorted positions → original order
+    flat_idx = torch.arange(hit.size(0), device=device) * K + best_k      # [Nr]
+    pos_flat = pos.view(-1)[flat_idx]                                     # [Nr]
+    # valid only where matched_mask
+    lidar_row_sorted = pos_flat[matched_mask]
+    lidar_row = ordL[lidar_row_sorted]                                    # [N_matched]
 
-    # Targets
-    gt_feat = torch.zeros((Nr, lidar.features.size(1)), device=device, dtype=lidar.features.dtype)
-    gt_feat[matched_mask] = lidar.features[lidar_row[matched_mask]]
+    # build outputs
+    Nr = radar.indices.size(0)
+    C_lidar = lidar.features.size(1)
+    gt_feat = torch.zeros((Nr, C_lidar), device=device, dtype=lidar.features.dtype)
+    gt_feat[matched_mask] = lidar.features[lidar_row]
 
-    # Offsets in **voxel units** from radar voxel center to LiDAR voxel center
-    dzz = (zz.view(Nr, K)[torch.arange(Nr, device=device), best_k] - z).to(radar.features.dtype)
-    dyy = (yy.view(Nr, K)[torch.arange(Nr, device=device), best_k] - y).to(radar.features.dtype)
-    dxx = (xx.view(Nr, K)[torch.arange(Nr, device=device), best_k] - x).to(radar.features.dtype)
-    gt_offsets = torch.stack([dzz, dyy, dxx], dim=1)  # grid steps
+    # offsets (voxel units) from radar voxel center to chosen neighbor voxel center
+    sel_z = zz.view(Nr, K)[torch.arange(Nr, device=device), best_k]
+    sel_y = yy.view(Nr, K)[torch.arange(Nr, device=device), best_k]
+    sel_x = xx.view(Nr, K)[torch.arange(Nr, device=device), best_k]
+    gt_offsets = torch.stack([
+        (sel_z - z).to(radar.features.dtype),
+        (sel_y - y).to(radar.features.dtype),
+        (sel_x - x).to(radar.features.dtype),
+    ], dim=1)  # [Nr,3]
 
     return matched_mask, gt_offsets, gt_feat
+
+# @torch.no_grad()
+# def local_match(radar: SparseConvTensor, lidar: SparseConvTensor, R=1):
+#     """
+#     For each radar index row, pick nearest LiDAR voxel within Chebyshev radius R.
+#     Returns:
+#       matched_mask [Nr] (bool): True if a LiDAR neighbor exists
+#       gt_offsets   [Nr,3]      : (dz,dy,dx) from voxel center to LiDAR-center voxel (grid units)
+#       gt_feat      [Nr,C]      : LiDAR features at the matched voxel
+#     """
+#     assert tuple(radar.spatial_shape) == tuple(lidar.spatial_shape)
+#     Z,Y,X = radar.spatial_shape
+#     device = radar.indices.device
+
+    # # Hash LiDAR coords for O(1) membership
+    # h_lidar = build_hash(lidar.indices, (Z,Y,X))
+    # # Sort for binary search
+    # hL, ordL = torch.sort(h_lidar)
+
+    # offs = make_offsets(R).to(device)
+    # Nr = radar.indices.size(0)
+    # b,z,y,x = (radar.indices[:,0], radar.indices[:,1], radar.indices[:,2], radar.indices[:,3])
+
+    # # Enumerate all neighbor candidates for each radar row
+    # # shape: [Nr, K, 4]
+    # K = offs.size(0)
+    # bz = b[:,None]
+    # zz = (z[:,None] + offs[None,:,0]).clamp_(0, Z-1)
+    # yy = (y[:,None] + offs[None,:,1]).clamp_(0, Y-1)
+    # xx = (x[:,None] + offs[None,:,2]).clamp_(0, X-1)
+
+    # cand_hash = _hash_zyx(bz, zz, yy, xx, Z,Y,X).reshape(Nr*K)
+
+    # # searchsorted to test membership
+    # pos = torch.searchsorted(hL, cand_hash)
+    # hit = (pos < hL.numel()) & (hL[pos] == cand_hash)
+    # hit = hit.view(Nr, K)
+
+    # # If multiple hits, pick the **closest in L1 grid distance** (or first)
+    # dL1 = offs.abs().sum(dim=1)[None,:].expand(Nr, K)  # [Nr,K]
+    # dL1_masked = torch.where(hit, dL1, torch.full_like(dL1, 1e9))
+    # best_k = dL1_masked.argmin(dim=1)                  # [Nr]
+    # matched_mask = dL1_masked[torch.arange(Nr, device=device), best_k] < 1e9
+
+    # # Map best_k -> LiDAR row index
+    # flat_idx = (torch.arange(Nr, device=device) * K + best_k)
+    # pos_flat = pos.view(-1)[flat_idx]
+    # lidar_row = ordL[pos_flat]     # [Nr] (undefined where not matched, but masked)
+
+    # # Targets
+    # gt_feat = torch.zeros((Nr, lidar.features.size(1)), device=device, dtype=lidar.features.dtype)
+    # gt_feat[matched_mask] = lidar.features[lidar_row[matched_mask]]
+
+    # # Offsets in **voxel units** from radar voxel center to LiDAR voxel center
+    # dzz = (zz.view(Nr, K)[torch.arange(Nr, device=device), best_k] - z).to(radar.features.dtype)
+    # dyy = (yy.view(Nr, K)[torch.arange(Nr, device=device), best_k] - y).to(radar.features.dtype)
+    # dxx = (xx.view(Nr, K)[torch.arange(Nr, device=device), best_k] - x).to(radar.features.dtype)
+    # gt_offsets = torch.stack([dzz, dyy, dxx], dim=1)  # grid steps
+
+    # return matched_mask, gt_offsets, gt_feat
 
 
 import torch.nn.functional as F
@@ -196,8 +293,8 @@ class SynthLocalLoss(nn.Module):
         matched, gt_d, gt_f = local_match(radar_st, lidar_st, R=R)
 
         # Occupancy on all radar rows
-        occ_logits = pred_occ_st.features.squeeze(1)
-        occ_loss = self.bce(occ_logits, matched.float()) if Nr > 0 else occ_logits.sum()*0.0
+        occ_logits = pred_occ_st.squeeze(1)
+        occ_loss = self.bce(occ_logits.mean(-1), matched.float()) if Nr > 0 else occ_logits.sum()*0.0
 
         # Offsets & feature on matched only
         if matched.any():
@@ -210,3 +307,23 @@ class SynthLocalLoss(nn.Module):
             feat_loss = off_loss
 
         return self.w_occ*occ_loss + self.w_off*off_loss + self.w_feat*feat_loss
+
+def voxel_center(cfg):
+    # z_id, y_id, x_id, z_c, y_c, x_c
+    x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
+    vsize_xyz = cfg.DATASET.roi.voxel_size
+    x_size = int(round((x_max-x_min)/vsize_xyz[0]))
+    y_size = int(round((y_max-y_min)/vsize_xyz[1]))
+    z_size = int(round((z_max-z_min)/vsize_xyz[2]))
+
+    centers = torch.zeros((z_size, y_size, x_size, 3))
+    for zi in range(z_size):
+        z_c = z_min + vsize_xyz[2]*zi + vsize_xyz[2]/2
+        for yi in range(y_size):
+            y_c = y_min + vsize_xyz[1]*yi + vsize_xyz[1]/2
+            for xi in range(z_size):
+                x_c = x_min + vsize_xyz[0]*xi + vsize_xyz[0]/2
+
+                centers[zi][yi][xi] = torch.tensor([z_c, y_c, x_c])
+    
+    return centers

@@ -22,6 +22,7 @@ from pipelines.pipeline_dect import Validate
 if __name__ == '__main__':
     # kdataset = Kdataset(root='data')
     # cfg_path = './K-Radar/configs/cfg_PVRCNNPP.yml'
+    d = 'cuda' if torch.cuda.is_available() else 'cpu'
     cfg_path = './configs/cfg_rdr_ldr.yml'
     cfg = cfg_from_yaml_file(cfg_path, cfg)
 
@@ -31,6 +32,8 @@ if __name__ == '__main__':
     y_size = int(round((y_max-y_min)/vsize_xyz[1]))
     z_size = int(round((z_max-z_min)/vsize_xyz[2]))
     print(f'zyx-size: {z_size}, {y_size}, {x_size}')
+    centors = voxel_center(cfg=cfg).to(d)
+    origin = torch.tensor([x_min, y_min, z_min]).to(d)
     
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
@@ -45,26 +48,24 @@ if __name__ == '__main__':
     ldr_processor = LdrPreprocessor(cfg)
 
     Nvoxels = cfg.DATASET.max_num_voxels
-    gen_net = nn.Sequential(
-        nn.Conv2d(Nvoxels*bs, 1024, kernel_size=1),
-        nn.ReLU(),
-        nn.Conv2d(1024, 1024, kernel_size=1),
-        nn.ReLU(),
-        nn.Conv2d(1024, Nvoxels*bs, kernel_size=1),
-        nn.Sigmoid()
-    )
-
-    gen_resnet = torchvision.models.resnet50(weights = "DEFAULT")
-
+    # gen_net = nn.Sequential(
+    #     nn.Conv2d(Nvoxels*bs, 1024, kernel_size=1),
+    #     nn.ReLU(),
+    #     nn.Conv2d(1024, 1024, kernel_size=1),
+    #     nn.ReLU(),
+    #     nn.Conv2d(1024, Nvoxels*bs, kernel_size=1),
+    #     nn.Sigmoid()
+    # )
+    gen_net = SparseUNet3D(in_ch=20)
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg)
+    gen_loss = SynthLocalLoss()
 
-    gen_opt = optim.SGD(gen_net.parameters(), lr=1e-2)
+    gen_opt = optim.SGD(gen_net.parameters(), lr=1e-3)
     dect_opt = optim.SGD(dect_net.parameters(), lr = 1e-3)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, vsize=[z_size, y_size, x_size])
     ppl.set_validate()
 
-    d = 'cuda' if torch.cuda.is_available() else 'cpu'
     n_epochs = 50
     mseloss = nn.MSELoss(reduction='mean')
     gen_net = gen_net.to(d)
@@ -90,46 +91,76 @@ if __name__ == '__main__':
             ldr_data = batch_dict['voxels']
             lmin, lmax = ldr_data.min(), ldr_data.max()
             
-            # if rdr_data.shape[0] < Nvoxels:
-            #     rdr_data = torch.vstack([rdr_data, torch.zeros((Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
-            #     batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], torch.zeros((Nvoxels - batch_dict['sp_indices'].shape[0], batch_dict['sp_indices'].shape[1])).to(d)])
+            if rdr_data.shape[0] < Nvoxels:
+                rdr_data = torch.vstack([rdr_data, torch.zeros((Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
+                batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], torch.zeros((Nvoxels - batch_dict['sp_indices'].shape[0], batch_dict['sp_indices'].shape[1])).to(d)])
 
-            # if ldr_data.shape[0] < Nvoxels:
-            #     ldr_data = torch.vstack([ldr_data, torch.zeros((Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
-            #     batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
+            if ldr_data.shape[0] < Nvoxels:
+                ldr_data = torch.vstack([ldr_data, torch.zeros((Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
+                batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
 
             # input = torch.concatenate([rdr_data, batch_dict['sp_indices'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1) #(N, 4+3)
             # gt = torch.concatenate([ldr_data, batch_dict['voxel_coords'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1)
 
             # spconv unet
-            x = SparseConvTensor(batch_dict['sp_features'], batch_dict['sp_indices'], [z_size, y_size, x_size], bs)
-            model = SparseUNet3D(in_ch=batch_dict['sp_features'].shape[1], base_ch=32, num_classes=K)
-            logits = model(x)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
+            radar_st = SparseConvTensor(features=rdr_data.reshape((Nvoxels, -1)), 
+                                        indices=batch_dict['sp_indices'].int(), 
+                                        spatial_shape=[z_size, y_size, x_size], 
+                                        batch_size=bs)
 
-            output = gen_net(input)
-            output = lmin + output*(lmax - lmin)
-            if (torch.isnan(output)).any():
-                print(f'output has nan')
+            lidar_st = SparseConvTensor(features=ldr_data.reshape((Nvoxels, -1)), 
+                                        indices=batch_dict['voxel_coords'].int(), 
+                                        spatial_shape=[z_size, y_size, x_size], 
+                                        batch_size=bs)
+            
+            out = gen_net(radar_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
+            # for key, val in out.items():
+            #     if isinstance(val, torch.Tensor):
+            #         print(f'{key}: {val.shape}')
+            #     else:
+            #         print(f'{key}: {val.features.shape}')
+            pred, occ, offs, attrs = out['st'], out['logits'], out['offs'], out['attrs']
+            loss_gen = gen_loss(pred, occ, radar_st, lidar_st)
 
-            loss_gen = mseloss(output, gt)/(Nvoxels)
-            scaler.scale(loss_gen).backward()
+            # output = gen_net(input)
+            # output = lmin + output*(lmax - lmin)
+            # if (torch.isnan(output)).any():
+            #     print(f'output has nan')
+            # # loss_gen = mseloss(output, gt)/(Nvoxels)
+            
 
             # print(f"batch_dict['voxels'] shape, before: {batch_dict['voxels'].shape}, after: {output.shape}")
-            _output = output.detach()
-            batch_dict['voxels'] = _output[:, :, :4].contiguous().float().to(d)
-            batch_dict['voxel_coords'][:, 1] = _output[:, 0, 4].int().clamp(1, z_size-1)
-            batch_dict['voxel_coords'][:, 2] = _output[:, 0, 5].int().clamp(1, y_size-1)
-            batch_dict['voxel_coords'][:, 3] = _output[:, 0, 6].int().clamp(1, x_size-1)
+            # _output = output.detach()
+            # batch_dict['voxels'] = _output[:, :, :4].contiguous().float().to(d)
+            # batch_dict['voxel_coords'][:, 1] = _output[:, 0, 4].int().clamp(1, z_size-1)
+            # batch_dict['voxel_coords'][:, 2] = _output[:, 0, 5].int().clamp(1, y_size-1)
+            # batch_dict['voxel_coords'][:, 3] = _output[:, 0, 6].int().clamp(1, x_size-1)
+            # batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+            # batch_dict['voxel_num_points'] = torch.tensor(Nvoxels).to(d)
+            # print(origin, vsize_xyz, radar_st.indices[:, 1:4].float().shape)
+            voxel_center_xyz = origin + (radar_st.indices[:, 1:4].float() + 0.5) * torch.tensor(vsize_xyz).to(d)  # grid center
+            pred_offset_m = offs * torch.tensor(vsize_xyz).to(d)  # scale voxel-units → meters
+            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+            # print(voxel_center_xyz.shape, pred_offset_m.shape)
+            attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+            _pred_indices = pred.indices.detach()
+            _attrs = attrs.detach()
+            if (torch.isnan(_attrs)).any():
+                print(f'_attrs has nan')
+            batch_dict['voxels'] = _attrs.contiguous().float().to(d)
+            batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, x_size-1)
+            batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
+            batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, z_size-1)
             batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-            # print(f"batch_dict['voxels']:{batch_dict['voxels'].shape}, batch_dict['voxel_coords']:{batch_dict['voxel_coords'].shape}")
-            
             batch_dict['voxel_num_points'] = torch.tensor(Nvoxels).to(d)
             
+            # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
             dect_output = dect_net(batch_dict)
             
             loss_dect = dect_net.loss(dect_output)
             
             # loss = loss_dect + loss_gen
+            scaler.scale(loss_gen).backward()
             scaler.scale(loss_dect).backward()
 
             scaler.step(gen_opt)       # safe even if gen_net has no grads
