@@ -89,7 +89,6 @@ class Validate:
         self.rdr_processor = RadarSparseProcessor(cfg)
         self.ldr_processor = LdrPreprocessor(cfg)
 
-
     def set_validate(self):
         self.is_validate = True
         self.is_consider_subset = self.cfg.VAL.IS_CONSIDER_VAL_SUBSET
@@ -519,11 +518,24 @@ class Validate:
                                         spatial_shape=[self.vsize[2], self.vsize[1], self.vsize[0]], 
                                         batch_size=1)
                 
-                out = self.gen_net(radar_st) 
+                lidar_st = SparseConvTensor(features=ldr_data.reshape((self.Nvoxels, -1)), 
+                                        indices=dict_datum['voxel_coords'].int(), 
+                                        spatial_shape=[self.vsize[2], self.vsize[1], self.vsize[0]], 
+                                        batch_size=1)
+            
+                # Pseudocode
+                rad_idx = radar_st.indices           # [Nr,4]
+                lid_idx = lidar_st.indices           # [Nl,4]
+
+                all_idx = torch.cat([rad_idx, lid_idx], dim=0)
+                all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
+                union_st = scatter_radar_to_union(radar_st, all_idx, [self.vsize[2], self.vsize[1], self.vsize[0]], 1)
+
+                out = self.gen_net(union_st) 
 
                 pred, occ, offs, attrs = out['st'], out['logits'], out['offs'], out['attrs']
 
-                voxel_center_xyz = self.origin + (radar_st.indices[:, 1:4].float() + 0.5) * torch.tensor(self.vsize).to(d)  # grid center
+                voxel_center_xyz = self.origin + (union_st.indices[:, 1:4].float() + 0.5) * torch.tensor(self.vsize).to(d)  # grid center
                 pred_offset_m = offs * torch.tensor(self.vsize).to(d)  # scale voxel-units → meters
                 voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                 # print(voxel_center_xyz.shape, pred_offset_m.shape)
@@ -532,10 +544,11 @@ class Validate:
                 _attrs = attrs.detach()
                 if (torch.isnan(_attrs)).any():
                     print(f'_attrs has nan')
-                dict_datum['voxels'] = _attrs.contiguous().float().to(d)
-                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.vsize[0]-1)
-                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.vsize[1]-1)
-                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.vsize[2]-1)
+                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.vsize[0]-1)[topN]
+                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.vsize[1]-1)[topN]
+                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.vsize[2]-1)[topN]
                 dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
                 dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
                 

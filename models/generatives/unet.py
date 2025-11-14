@@ -294,6 +294,7 @@ class SynthLocalLoss(nn.Module):
 
         # Occupancy on all radar rows
         occ_logits = pred_occ_st.squeeze(1)
+        # print(f'here: {occ_logits.shape[0]}, {matched.shape[0]}')
         occ_loss = self.bce(occ_logits.mean(-1), matched.float()) if Nr > 0 else occ_logits.sum()*0.0
 
         # Offsets & feature on matched only
@@ -327,3 +328,81 @@ def voxel_center(cfg):
                 centers[zi][yi][xi] = torch.tensor([z_c, y_c, x_c])
     
     return centers
+
+import torch
+from spconv.pytorch import SparseConvTensor
+
+def scatter_radar_to_union(radar_st, union_idx, spatial_shape, batch_size, fill_value=0.0):
+    """
+    radar_st: SparseConvTensor with features at radar indices
+    union_idx: [M,4] LongTensor = union of radar & lidar voxel coords (b,z,y,x)
+    spatial_shape: same as radar_st.spatial_shape  (Z,Y,X)
+    batch_size: same as radar_st.batch_size
+    fill_value: what to put in voxels that exist in union but not in radar
+    """
+    device = radar_st.indices.device
+    dtype_idx = torch.int64
+
+    radar_idx = radar_st.indices.to(dtype_idx).to(device)   # [Nr,4]
+    union_idx = union_idx.to(dtype_idx).to(device)          # [M,4]
+    Nr = radar_idx.shape[0]
+    M  = union_idx.shape[0]
+
+    ZMAX, YMAX, XMAX = spatial_shape
+    BMAX = batch_size
+
+    def hash_idx(idx):
+        b, z, y, x = idx[:,0], idx[:,1], idx[:,2], idx[:,3]
+        return (((b * ZMAX + z) * YMAX + y) * XMAX + x)
+
+    # 1) hashes
+    radar_hash = hash_idx(radar_idx)      # [Nr]
+    union_hash = hash_idx(union_idx)      # [M]
+
+    # 2) sort radar hashes for searchsorted
+    sorted_h, sorted_ord = torch.sort(radar_hash)           # [Nr], [Nr]
+    sorted_feat = radar_st.features[sorted_ord]             # [Nr,C]
+    C = sorted_feat.shape[1]
+
+    # 3) searchsorted to find potential positions of union_hash in sorted_h
+    pos = torch.searchsorted(sorted_h, union_hash)          # [M], int64
+
+    # 4) SAFE membership test (no OOB indexing)
+    #    Only gather where 0 <= pos < Nr
+    valid_pos = (pos >= 0) & (pos < Nr)                     # [M] bool
+
+    gathered = torch.empty_like(union_hash)                 # [M]
+    # fill with sentinel that cannot equal any real hash
+    gathered[:] = -1
+    gathered[valid_pos] = sorted_h[pos[valid_pos]]
+
+    is_member = valid_pos & (gathered == union_hash)        # [M] bool
+
+    # 5) Build union feature matrix
+    feat_dim = C
+    fill = torch.full((1, feat_dim),
+                      float(fill_value),
+                      device=radar_st.features.device,
+                      dtype=radar_st.features.dtype)
+
+    union_feat = torch.empty((M, feat_dim),
+                             device=radar_st.features.device,
+                             dtype=radar_st.features.dtype)
+
+    # copy radar features where there is a match
+    idx_radar_rows = pos[is_member]                         # indices into sorted_feat
+    union_feat[is_member] = sorted_feat[idx_radar_rows]
+
+    # fill zeros (or fill_value) for LiDAR-only voxels
+    union_feat[~is_member] = fill
+
+    # 6) Construct new SparseConvTensor on the union support
+    union_st = SparseConvTensor(
+        features=union_feat,
+        indices=union_idx.int(),
+        spatial_shape=spatial_shape,
+        batch_size=batch_size,
+    )
+    return union_st
+
+
