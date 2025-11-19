@@ -90,7 +90,7 @@ if __name__ == '__main__':
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
     train_dataloader = DataLoader(train_kdataset, batch_size=bs, 
-                                  collate_fn=train_kdataset.collate_fn, num_workers=4, shuffle=True)
+                                  collate_fn=train_kdataset.collate_fn, num_workers=4, shuffle=False)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
     test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
@@ -102,18 +102,19 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     gen_net = SparseUNet3D(in_ch=20)
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg)
-    log_sig = '251113_010701'
-    epoch = '50'
+    log_sig = '251119_142454'
+    epoch = '30'
     model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{epoch}.pth')
     gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
     dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
 
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, vsize=[z_size, y_size, x_size])
+    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
     ppl.set_validate()
 
     gen_net = gen_net.to(d)
-    for bi, batch_dict in enumerate(train_dataloader):
-        if bi > 0 : break
+    for bi, batch_dict in enumerate(test_dataloader):
+        if bi > 3 : break
+
         batch_dict = rdr_processor.forward(batch_dict)
         batch_dict = ldr_processor.forward(batch_dict)
 
@@ -166,7 +167,8 @@ if __name__ == '__main__':
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
         
         out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
-        pred, occ, offs, attrs = out['st'], out['logits'], out['offs'], out['attrs']
+        pred, occ, attrs = out['st'], out['logits'], out['attrs']
+        offs = attrs[:, :, :3]
 
         voxel_center_xyz = origin + (union_st.indices[:, 1:4].float() + 0.5) * torch.tensor(vsize_xyz).to(d)  # grid center
         pred_offset_m = offs * torch.tensor(vsize_xyz).to(d)  # scale voxel-units → meters
@@ -184,18 +186,26 @@ if __name__ == '__main__':
 
         from visualize_unet_points import *
 
+        out_tmp = out
+        out_tmp['st'] = union_st
         # Build pred points from your UNet output
         pred_xyz, pred_attr = unet_slots_to_xyz_attrs(
             out,                       # your dict
             voxel_size=[0.05, 0.05, 0.1],   # <-- set to your grid
             origin=origin,       # <-- set to your grid origin
-            prob_thresh=0.35
+            prob_thresh=0.9,
+            clamp_offsets=False
         )
 
         rdr_points_xyz=np.ascontiguousarray(batch_dict['sp_features'][:, :, :3].detach().cpu().numpy().reshape(-1, 3)) 
         rdr_intensities=np.ascontiguousarray(batch_dict['sp_features'][:, :, -1].detach().cpu().numpy().reshape(-1)) 
         ldr_points_xyz=np.ascontiguousarray(batch_dict['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
         ldr_intensities=np.ascontiguousarray(batch_dict['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
+
+        # rdr_points_xyz1=np.ascontiguousarray(batch_dict['rdr_sparse'][:, :3].detach().cpu().numpy().reshape(-1, 3)) 
+        # rdr_intensities1=np.ascontiguousarray(batch_dict['rdr_sparse'][:, -1].detach().cpu().numpy().reshape(-1)) 
+        # ldr_points_xyz1=np.ascontiguousarray(batch_dict['ldr64'][:, :3].detach().cpu().numpy().reshape(-1, 3))
+        # ldr_intensities1=np.ascontiguousarray(batch_dict['ldr64'][:, -1].detach().cpu().numpy().reshape(-1))
 
 
         # Pick a shared camera pose (e.g., from LiDAR cloud)
@@ -204,15 +214,42 @@ if __name__ == '__main__':
         # Save all with the SAME pose
         fig_path = os.path.join('visualize', log_sig, epoch)
         os.makedirs(fig_path, exist_ok=True)
+        list_tuple_objs = batch_dict['meta'][0]['label']
+        dx, dy, dz = batch_dict['meta'][0]['calib']
+        gt_boxes = []
+        for obj in list_tuple_objs:
+            cls_name, (x, y, z, th, l, w, h), trk, avail = obj
+            x = x + dx
+            y = y + dy
+            z = z + dz
+            print(f'dx, dy, dz: {dx}, {dy}, {dz}')
+            gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
+
         save_open3d_render_fixed_pose(pred_xyz, 
                                       intensities=pred_attr[:,-1], 
-                                      filename=os.path.join(fig_path, "pred.png"), 
+                                      boxes=gt_boxes,
+                                      filename=os.path.join(fig_path, f"pred_test_{bi}.png"), 
                                       pose=pose)
         save_open3d_render_fixed_pose(rdr_points_xyz, 
                                       intensities=rdr_intensities, 
-                                      filename=os.path.join(fig_path, "rdr.png"),   
+                                      boxes=gt_boxes,
+                                      filename=os.path.join(fig_path, f"rdr_test_{bi}.png"),   
                                       pose=pose)
         save_open3d_render_fixed_pose(ldr_points_xyz, 
                                       intensities=ldr_intensities, 
-                                      filename=os.path.join(fig_path, "ldr.png"),  
+                                      boxes=gt_boxes,
+                                      filename=os.path.join(fig_path, f"ldr_test_{bi}.png"),  
                                       pose=pose)
+        # save_open3d_render_fixed_pose(rdr_points_xyz1, 
+        #                               intensities=rdr_intensities, 
+        #                               filename=os.path.join(fig_path, "rdrsp.png"),   
+        #                               pose=pose)
+        # save_open3d_render_fixed_pose(ldr_points_xyz1, 
+        #                               intensities=ldr_intensities, 
+        #                               filename=os.path.join(fig_path, "ldr64.png"),  
+        #                               pose=pose)
+
+
+
+
+        # train_kdataset.vis_in_open3d(batch_dict)

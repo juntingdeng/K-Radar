@@ -111,8 +111,27 @@ def _colors_from_intensity(I, N):
         C = np.stack([v, np.minimum(1.0, 0.5 + 0.5*v), 1.0 - v], axis=1).astype(np.float64)
     return C
 
+def make_o3d_box(x, y, z, th, l, w, h, color=[1, 0, 0]):
+    """
+    Create an Open3D oriented box from K-Radar format:
+    (x, y, z, yaw, length, width, height)
+    """
+    box = o3d.geometry.OrientedBoundingBox()
 
-def save_open3d_render_fixed_pose(points_xyz, intensities=None, filename="view.png",
+    # Center
+    box.center = np.array([x, y, z])
+
+    # Rotation around Z
+    R = box.get_rotation_matrix_from_xyz([0, 0, th])
+    box.R = R
+
+    # Extents (length, width, height)
+    box.extent = np.array([l, w, h])
+
+    box.color = np.array(color)
+    return box
+
+def save_open3d_render_fixed_pose(points_xyz, intensities=None, boxes=None, filename="view.png",
                                   pose=None, width=1600, height=900,
                                   fov_deg=60.0, near=0.1, far=5000.0,
                                   bg=(1,1,1,1), point_size=1.5):
@@ -133,6 +152,17 @@ def save_open3d_render_fixed_pose(points_xyz, intensities=None, filename="view.p
         mat.point_size = float(point_size)
 
         rnd.scene.add_geometry("points", pcd, mat)
+
+        # ---- Bounding Boxes ----
+        for i, box_vals in enumerate(boxes):
+            cls_name, (x, y, z, th, l, w, h), trk, avail = box_vals
+            box_obj = make_o3d_box(x, y, z, th, l, w, h)
+
+            mat_box = o3d.visualization.rendering.MaterialRecord()
+            mat_box.shader = "unlitLine"
+            mat_box.line_width = 3.0
+
+            rnd.scene.add_geometry(f"box_{i}", box_obj, mat_box)
 
         if pose is None:
             pose = compute_reference_pose(X, view="bev")
@@ -198,8 +228,10 @@ def unet_slots_to_xyz_attrs(pred, voxel_size, origin, prob_thresh=0.3, clamp_off
     """
     st      = pred["st"]
     logits  = pred["logits"]     # [N,K]
-    offs    = pred["offs"]       # [N,K,3]  (voxel units!)
+    # offs    = pred["offs"]       # [N,K,3]  (voxel units!)
     attrs   = pred["attrs"]      # [N,K,F]
+    offs    = attrs[:, :, :3]    # [N,K,3]  (voxel units!)
+
 
     # 1) centers from spconv indices [b,z,y,x]  →  [x,y,z] meters
     idx = st.indices.long()      # [N,4]
@@ -223,8 +255,11 @@ def unet_slots_to_xyz_attrs(pred, voxel_size, origin, prob_thresh=0.3, clamp_off
     offs_m = offs * scale                         # [N,K,3] meters
 
     # 4) assemble world xyz per slot
-    xyz = centers[:,None,:] + offs_m              # [N,K,3]
+    xyz = centers[:, None, :] + offs_m              # [N,K,3]
     F   = attrs.shape[-1]
     xyz  = xyz[keep].detach().cpu().numpy().astype(np.float64)    # (M,3)
     attrs= attrs[keep].detach().cpu().numpy().astype(np.float64)  # (M,F)
     return xyz, attrs
+
+import numpy as np
+import matplotlib.pyplot as plt

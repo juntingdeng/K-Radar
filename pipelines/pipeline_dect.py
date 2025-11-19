@@ -50,7 +50,7 @@ def get_local_time_str():
     return f'{tm_year}{tm_mon}{tm_mday}_{tm_hour}{tm_min}{tm_sec}'
 
 class Validate:
-    def __init__(self, cfg, gen_net, dect_net, vsize=[]):
+    def __init__(self, cfg, gen_net, dect_net, spatial_size=[]):
         self.is_validate = True
         self.gen_net = gen_net
         self.dect_net = dect_net
@@ -60,7 +60,8 @@ class Validate:
         self.val_num_subset = self.cfg.VAL.NUM_SUBSET
         self.val_per_epoch_full = self.cfg.VAL.VAL_PER_EPOCH_FULL
         self.Nvoxels = self.cfg.DATASET.max_num_voxels
-        self.vsize = vsize #zyx
+        self.voxel_size = self.cfg.DATASET.roi.voxel_size #xyz
+        self.spatial_size = spatial_size #zyx
         x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
         self.origin = torch.tensor([x_min, y_min, z_min]).to(d)
 
@@ -89,6 +90,8 @@ class Validate:
         self.rdr_processor = RadarSparseProcessor(cfg)
         self.ldr_processor = LdrPreprocessor(cfg)
 
+        self.voxel_size = torch.tensor(self.voxel_size).to(d)
+
     def set_validate(self):
         self.is_validate = True
         self.is_consider_subset = self.cfg.VAL.IS_CONSIDER_VAL_SUBSET
@@ -114,219 +117,10 @@ class Validate:
             print('* Exception error: check VAL.REGARDING')
         ### Consider output of network and dataset ###
 
-    # V2
-    def validate_kitti(self, epoch=None, list_conf_thr=None, is_subset=False, dataloader=None):
-        # self.gen_net.training=False
-        self.gen_net.eval()
-
-        self.dect_net.training=False
-        self.dect_net.eval()
-
-        eval_ver2 = self.cfg.get('cfg_eval_ver2', False)
-        if eval_ver2:
-            class_names = []
-            dict_label = self.cfg.DATASET.label.copy()
-            list_for_pop = ['calib', 'onlyR', 'Label', 'consider_cls', 'consider_roi', 'remove_0_obj']
-            for temp_key in list_for_pop:
-                dict_label.pop(temp_key)
-            for k, v in dict_label.items():
-                _, logit_idx, _, _ = v
-                if logit_idx > 0:
-                    class_names.append(k)
-            self.dict_cls_id_to_name = dict()
-            for idx_cls, cls_name in enumerate(class_names):
-                self.dict_cls_id_to_name[(idx_cls+1)] = cls_name # 1 for Background
-        
-
-        is_shuffle = False
-        tqdm_bar = tqdm(total=len(dataloader), desc='* Test (Total): ')
-        log_header = 'val_tot'
-
-        # data_loader = torch.utils.data.DataLoader(self.dataset_test, \
-        #         batch_size=1, shuffle=is_shuffle, collate_fn=self.dataset_test.collate_fn, \
-        #         num_workers = self.cfg.OPTIMIZER.NUM_WORKERS)
-        
-        if epoch is None:
-            dir_epoch = 'none'
-        else:
-            dir_epoch = f'epoch_{epoch}_subset' if is_subset else f'epoch_{epoch}_total'
-
-        # initialize via VAL.LIST_VAL_CONF_THR
-        path_dir = os.path.join(self.path_log, 'test_kitti', dir_epoch)
-        # print(path_dir)
-        for conf_thr in list_conf_thr:
-            os.makedirs(os.path.join(path_dir, f'{conf_thr}'), exist_ok=True)
-            with open(path_dir + f'/{conf_thr}/' + 'val.txt', 'w') as f:
-                f.write('')
-            f.close()
-
-        for idx_datum, dict_datum in enumerate(dataloader):
-            if is_subset & (idx_datum >= self.val_num_subset):
-                break
-            
-            # try:
-                # dict_out = self.network(dict_datum) # inference
-            is_feature_inferenced = True
-
-            dict_datum = self.rdr_processor.forward(dict_datum)
-            dict_datum = self.ldr_processor.forward(dict_datum)
-
-            rdr_data = dict_datum['sp_features']
-            ldr_data = dict_datum['voxels']
-
-            data = torch.tensor(rdr_data).to(d)
-            output = self.gen_net(data)
-
-            if (torch.isnan(output)).any():
-                print(f'output has nan')
-            dict_datum['voxels'] = output.contiguous().float()
-            dict_datum['voxel_coords'] = torch.tensor(dict_datum['voxel_coords']).to(d)
-            for key, val in dict_datum.items():
-                if isinstance(val, np.ndarray):
-                    dict_datum[key] = torch.tensor(val).to(device)
-                elif isinstance(val, torch.Tensor) and val.device != device:
-                    dict_datum[key] = dict_datum[key].to(device)
-
-            dict_out = self.dect_net(dict_datum)
-
-            # except:
-            #     print('* Exception error (Pipeline): error during inferencing a sample -> empty prediction')
-            #     print('* Meta info: ', dict_out['meta'])
-            #     is_feature_inferenced = False
-
-            idx_name = str(idx_datum).zfill(6)
-
-            ### for every conf in list_conf_thr ###
-            for conf_thr in list_conf_thr:
-                preds_dir = os.path.join(path_dir, f'{conf_thr}', 'pred')
-                labels_dir = os.path.join(path_dir, f'{conf_thr}', 'gt')
-                desc_dir = os.path.join(path_dir, f'{conf_thr}', 'desc')
-                list_dir = [preds_dir, labels_dir, desc_dir]
-                split_path = path_dir + f'/{conf_thr}/' + 'val.txt'
-                for temp_dir in list_dir:
-                    os.makedirs(temp_dir, exist_ok=True)
-
-                if is_feature_inferenced:
-                    if eval_ver2:
-                        pred_dicts = dict_out['pred_dicts'][0]
-                        pred_boxes = pred_dicts['pred_boxes'].detach().cpu().numpy()
-                        pred_scores = pred_dicts['pred_scores'].detach().cpu().numpy()
-                        pred_labels = pred_dicts['pred_labels'].detach().cpu().numpy()
-                        list_pp_bbox = []
-                        list_pp_cls = []
-
-                        for idx_pred in range(len(pred_labels)):
-                            x, y, z, l, w, h, th = pred_boxes[idx_pred]
-                            score = pred_scores[idx_pred]
-                            
-                            if score > conf_thr:
-                                cls_idx = int(np.round(pred_labels[idx_pred]))
-                                cls_name = class_names[cls_idx-1]
-                                list_pp_bbox.append([score, x, y, z, l, w, h, th])
-                                list_pp_cls.append(cls_idx)
-                            else:
-                                continue
-                        pp_num_bbox = len(list_pp_cls)
-                        dict_out_current = dict_out
-                        dict_out_current.update({
-                            'pp_bbox': list_pp_bbox,
-                            'pp_cls': list_pp_cls,
-                            'pp_num_bbox': pp_num_bbox,
-                            'pp_desc': dict_out['meta'][0]['desc']
-                        })
-                    else:
-                        dict_out_current = self.network.list_modules[-1].get_nms_pred_boxes_for_single_sample(dict_out, conf_thr, is_nms=True)
-                else:
-                    dict_out_current = update_dict_feat_not_inferenced(dict_out) # mostly sleet for lpc (e.g. no measurement)                
-                if dict_out is None:
-                    print('* Exception error (Pipeline): dict_item is None in validation')
-                    continue
-
-                dict_out = dict_datum_to_kitti(self, dict_out)
-
-                if len(dict_out['kitti_gt']) == 0: # no eval for emptry obj label
-                    pass
-                else:
-                    ### Gt ###
-                    for idx_label, label in enumerate(dict_out['kitti_gt']):
-                        open_mode = 'w' if idx_label == 0 else 'a'
-                        with open(labels_dir + '/' + idx_name + '.txt', open_mode) as f:
-                            f.write(label+'\n')
-                    ### Gt ###
-
-                    ### Process description ###
-                    with open(desc_dir + '/' + idx_name + '.txt', 'w') as f:
-                        f.write(dict_out['kitti_desc'])
-                    ### Process description ###
-
-                    ### Pred: do not care len 0 with if else: already care as dummy ###
-                    for idx_pred, pred in enumerate(dict_out['kitti_pred']):
-                        open_mode = 'w' if idx_pred == 0 else 'a'
-                        with open(preds_dir + '/' + idx_name + '.txt', open_mode) as f:
-                            f.write(pred+'\n')
-                    ### Pred: do not care len 0 with if else: already care as dummy ###
-
-                    str_log = idx_name + '\n'
-                    with open(split_path, 'a') as f:
-                        f.write(str_log)
-            
-            # free memory (Killed error, checked with htop)
-            if 'pointer' in dict_datum.keys():
-                for dict_item in dict_datum['pointer']:
-                    for k in dict_item.keys():
-                        if k != 'meta':
-                            dict_item[k] = None
-            for temp_key in dict_datum.keys():
-                dict_datum[temp_key] = None
-            tqdm_bar.update(1)
-        tqdm_bar.close()
-
-        ### Validate per conf ###
-        for conf_thr in list_conf_thr:
-            preds_dir = os.path.join(path_dir, f'{conf_thr}', 'pred')
-            labels_dir = os.path.join(path_dir, f'{conf_thr}', 'gt')
-            desc_dir = os.path.join(path_dir, f'{conf_thr}', 'desc')
-            split_path = path_dir + f'/{conf_thr}/' + 'val.txt'
-
-            dt_annos = kitti.get_label_annos(preds_dir)
-            val_ids = read_imageset_file(split_path)
-            gt_annos = kitti.get_label_annos(labels_dir, val_ids)
-            print(f'labels_dir: {labels_dir}')
-            print(f'len: {len(gt_annos)}, gt_annos: {gt_annos}')
-
-            list_metrics = []
-            for idx_cls_val in self.list_val_care_idx:
-                # if self.is_validation_updated:
-                #     # Thanks to Felix Fent (in TUM) and Miao Zhang (in Bosch Research)
-                #     # Fixed mixed interpolation (issue #28) and z_center (issue #36) in evaluation
-                #     dict_metrics, result_log = get_official_eval_result_revised(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
-                # else:
-                dict_metrics, result_log = get_official_eval_result(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
-                print(f'-----conf{conf_thr}-----')
-                print(result_log)
-                list_metrics.append(dict_metrics)
-
-            for dict_metrics in list_metrics:
-                cls_name = dict_metrics['cls']
-                ious = dict_metrics['iou']
-                bevs = dict_metrics['bev']
-                ap3ds = dict_metrics['3d']
-                self.log_test.add_scalars(f'{log_header}/BEV_conf_thr_{conf_thr}', {
-                    f'iou_{ious[0]}_{cls_name}': bevs[0],
-                    f'iou_{ious[1]}_{cls_name}': bevs[1],
-                    f'iou_{ious[2]}_{cls_name}': bevs[2],
-                }, epoch)
-                self.log_test.add_scalars(f'{log_header}/3D_conf_thr_{conf_thr}', {
-                    f'iou_{ious[0]}_{cls_name}': ap3ds[0],
-                    f'iou_{ious[1]}_{cls_name}': ap3ds[1],
-                    f'iou_{ious[2]}_{cls_name}': ap3ds[2],
-                }, epoch)
-        ### Validate per conf ###
-
     def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False, data_loader=None):
         # self.network.eval()
-
-        self.gen_net.eval()
+        if self.gen_net:
+            self.gen_net.eval()
         self.dect_net.training=False
         self.dect_net.eval()
 
@@ -479,78 +273,63 @@ class Validate:
                         elif isinstance(val, torch.Tensor) and val.device != device:
                             dict_datum[key] = dict_datum[key].to(device)
 
-                rdr_data = dict_datum['sp_features']
+                
+                
+                if self.gen_net:
+                    rdr_data = dict_datum['sp_features']
+                    if rdr_data.shape[0] < self.Nvoxels:
+                        rdr_data = torch.vstack([rdr_data, torch.zeros((self.Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
+                        dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], torch.zeros((self.Nvoxels - dict_datum['sp_indices'].shape[0], dict_datum['sp_indices'].shape[1])).to(d)])
+
+                    
                 ldr_data = dict_datum['voxels']
                 lmin, lmax = ldr_data.min(), ldr_data.max()
-                
-                if rdr_data.shape[0] < self.Nvoxels:
-                    rdr_data = torch.vstack([rdr_data, torch.zeros((self.Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
-                    dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], torch.zeros((self.Nvoxels - dict_datum['sp_indices'].shape[0], dict_datum['sp_indices'].shape[1])).to(d)])
-
                 if ldr_data.shape[0] < self.Nvoxels:
-                    ldr_data = torch.vstack([ldr_data, torch.zeros((self.Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
-                    dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], torch.zeros((self.Nvoxels - dict_datum['voxel_coords'].shape[0], dict_datum['voxel_coords'].shape[1])).to(d)])
-            
-                # rdr_data = rdr_data.to(d)
-                # ldr_data = ldr_data.to(d)
-
-                # input = torch.concatenate([rdr_data, dict_datum['sp_indices'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1) #(N, 4+3)
-                # gt = torch.concatenate([ldr_data, dict_datum['voxel_coords'][:, 1:].unsqueeze(1).repeat(1, 5, 1)], dim=-1)
-
-                # output = self.gen_net(input)
-                # output = lmin + output*(lmax - lmin)
-                # if (torch.isnan(output)).any():
-                #     print(f'output has nan')
-
-                # # print(f"batch_dict['voxels'] shape, before: {batch_dict['voxels'].shape}, after: {output.shape}")
-                # _output = output.detach()
-                # dict_datum['voxels'] = _output[:, :, :4].contiguous().float().to(d)
-                # dict_datum['voxel_coords'][:, 1] = _output[:, 0, 4].int().clamp(1, self.vsize[0]-1)
-                # dict_datum['voxel_coords'][:, 2] = _output[:, 0, 5].int().clamp(1, self.vsize[1]-1)
-                # dict_datum['voxel_coords'][:, 3] = _output[:, 0, 6].int().clamp(1, self.vsize[2]-1)
-                # dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                # # print(f"batch_dict['voxels']:{batch_dict['voxels'].shape}, batch_dict['voxel_coords']:{batch_dict['voxel_coords'].shape}")
-                
-                # dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
-
-                radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
-                                        indices=dict_datum['sp_indices'].int(), 
-                                        spatial_shape=[self.vsize[2], self.vsize[1], self.vsize[0]], 
-                                        batch_size=1)
-                
-                lidar_st = SparseConvTensor(features=ldr_data.reshape((self.Nvoxels, -1)), 
-                                        indices=dict_datum['voxel_coords'].int(), 
-                                        spatial_shape=[self.vsize[2], self.vsize[1], self.vsize[0]], 
-                                        batch_size=1)
-            
-                # Pseudocode
-                rad_idx = radar_st.indices           # [Nr,4]
-                lid_idx = lidar_st.indices           # [Nl,4]
-
-                all_idx = torch.cat([rad_idx, lid_idx], dim=0)
-                all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
-                union_st = scatter_radar_to_union(radar_st, all_idx, [self.vsize[2], self.vsize[1], self.vsize[0]], 1)
-
-                out = self.gen_net(union_st) 
-
-                pred, occ, offs, attrs = out['st'], out['logits'], out['offs'], out['attrs']
-
-                voxel_center_xyz = self.origin + (union_st.indices[:, 1:4].float() + 0.5) * torch.tensor(self.vsize).to(d)  # grid center
-                pred_offset_m = offs * torch.tensor(self.vsize).to(d)  # scale voxel-units → meters
-                voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-                # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
-                _pred_indices = pred.indices.detach()
-                _attrs = attrs.detach()
-                if (torch.isnan(_attrs)).any():
-                    print(f'_attrs has nan')
-                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.vsize[0]-1)[topN]
-                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.vsize[1]-1)[topN]
-                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.vsize[2]-1)[topN]
-                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                        dict_datum['voxels'] = torch.vstack([ldr_data, torch.zeros((self.Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
+                        dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], torch.zeros((self.Nvoxels - dict_datum['voxel_coords'].shape[0], dict_datum['voxel_coords'].shape[1])).to(d)])
                 dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
+                
+                if self.gen_net:
+                    #vsize: zyx
+                    radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
+                                            indices=dict_datum['sp_indices'].int(), 
+                                            spatial_shape=self.spatial_size, 
+                                            batch_size=1)
+                    
+                    lidar_st = SparseConvTensor(features=ldr_data.reshape((self.Nvoxels, -1)), 
+                                            indices=dict_datum['voxel_coords'].int(), 
+                                            spatial_shape=self.spatial_size, 
+                                            batch_size=1)
+            
+                    # Pseudocode
+                    rad_idx = radar_st.indices           # [Nr,4]
+                    lid_idx = lidar_st.indices           # [Nl,4]
+
+                    all_idx = torch.cat([rad_idx, lid_idx], dim=0)
+                    all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
+                    union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
+
+                    out = self.gen_net(union_st) 
+
+                    pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                    offs = attrs[:, :, :3]
+
+                    voxel_center_xyz = self.origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
+                    pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
+                    voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+                    # print(voxel_center_xyz.shape, pred_offset_m.shape)
+                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+                    _pred_indices = pred.indices.detach()
+                    _attrs = attrs.detach()
+                    if (torch.isnan(_attrs)).any():
+                        print(f'_attrs has nan')
+                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
+                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
+                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                    dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
                 
                 dict_out = self.dect_net(dict_datum)
 

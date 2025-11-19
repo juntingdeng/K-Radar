@@ -459,7 +459,7 @@ class KRadarDetection_v2_0(Dataset):
             vis.add_geometry(pcd_rdr)
         
         if 'label' in vis_list:
-            label = dict_item['meta']['label']
+            label = dict_item['meta'][0]['label']
             for obj in label:
                 cls_name, (x, y, z, th, l, w, h), trk, avail = obj
                 consider, logit_idx, rgb, bgr = self.label[cls_name]
