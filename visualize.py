@@ -182,8 +182,14 @@ if __name__ == '__main__':
         prob_thresh=args.thresh
         probs = torch.sigmoid(occ)                 # [N,K]
         keep  = probs >= prob_thresh 
-        points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
-        intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
+
+        # points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
+        # intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
+
+        _attrs = torch.where(keep.unsqueeze(-1), attrs, torch.zeros_like(attrs)).detach().cpu().numpy()
+        points_xyz = _attrs[:,:, :3].reshape(-1, 3)
+        intensity = _attrs[:,:, -1].reshape(-1)
+
         points_xyz = np.ascontiguousarray(points_xyz)
         intensity = np.ascontiguousarray(intensity)
         print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
@@ -219,9 +225,15 @@ if __name__ == '__main__':
             x = x + dx
             y = y + dy
             z = z + dz
-            print(f'dx, dy, dz: {dx}, {dy}, {dz}')
+            # print(f'dx, dy, dz: {dx}, {dy}, {dz}')
             gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
 
+        print(f'points_xyz: {points_xyz.shape[0]}, pred_xyz: {pred_xyz.shape[0]}, \
+               rdr_points_xyz: {rdr_points_xyz.shape[0]}, ldr_points_xyz: {ldr_points_xyz.shape[0]}')
+
+        print(f'points_xyz: {intensity.mean()}, pred_xyz: {pred_attr[:,-1].mean()}, \
+               rdr_points_xyz: {rdr_intensities.mean()}, ldr_points_xyz: {ldr_intensities.mean()}')
+        
         save_open3d_render_fixed_pose(points_xyz=points_xyz, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,

@@ -35,6 +35,7 @@ from utils.kitti_eval.eval_revised import get_official_eval_result_revised
 from utils.util_optim import clip_grad_norm_
 from depthEst.KDataset import *
 from models.generatives.unet import *
+# from visualize import *
 
 d = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -331,17 +332,70 @@ class Validate:
                 prob_thresh=0.9
                 probs = torch.sigmoid(occ)                 # [N,K]
                 keep = probs >= prob_thresh 
-                _attrs = _attrs[keep][:, None, :]
-                # _pred_indices = _pred_indices[keep]
-                print(f'kept _attrs: {_attrs.shape}')
+                voxel_num_points = keep.sum(dim=1) #[N, ]
+                _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
+                # _attrs = _attrs[keep][:, None, :]
 
-                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
-                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
-                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
-                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
+                vis = False
+                if vis:
+                    points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
+                    intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
+
+                    points_xyz = np.ascontiguousarray(points_xyz)
+                    intensity = np.ascontiguousarray(intensity)
+                    print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+
+                    ldr_points_xyz=np.ascontiguousarray(dict_datum['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
+                    ldr_intensities=np.ascontiguousarray(dict_datum['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
+
+                    # Pick a shared camera pose (e.g., from LiDAR cloud)
+                    pose = compute_reference_pose(ldr_points_xyz, view="bev")
+
+                    # Save all with the SAME pose
+                    fig_path = os.path.join('visualize', 'test')
+                    os.makedirs(fig_path, exist_ok=True)
+                    list_tuple_objs = dict_datum['meta'][0]['label']
+                    dx, dy, dz = dict_datum['meta'][0]['calib']
+                    gt_boxes = []
+                    for obj in list_tuple_objs:
+                        cls_name, (x, y, z, th, l, w, h), trk, avail = obj
+                        x = x + dx
+                        y = y + dy
+                        z = z + dz
+                        print(f'dx, dy, dz: {dx}, {dy}, {dz}')
+                        gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
+
+                    save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+                                                intensities=intensity, 
+                                                boxes=gt_boxes,
+                                                filename=os.path.join(fig_path, f"pred1_test_{idx_datum}.png"), 
+                                                pose=pose)
+                    save_open3d_render_fixed_pose(ldr_points_xyz, 
+                                    intensities=ldr_intensities, 
+                                    boxes=gt_boxes,
+                                    filename=os.path.join(fig_path, f"ldr_test_{idx_datum}.png"),  
+                                    pose=pose)
+                      
+                # keep = torch.any(keep, dim=1, keepdim=False)
+                # print(f'keep: {keep.shape}')
+                # _pred_indices = torch.where(keep, _pred_indices, torch.zeros_like(_pred_indices))
+                # print(f'_pred_indices:{_pred_indices.shape}'
+
+                if _attrs.shape[0] < self.Nvoxels:
+                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)
+                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
+                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
+                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
+                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                    dict_datum['voxel_num_points'] = voxel_num_points
+                else:
+                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
+                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
+                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                    dict_datum['voxel_num_points'] = voxel_num_points[topN]
             
             dict_out = self.dect_net(dict_datum)
 

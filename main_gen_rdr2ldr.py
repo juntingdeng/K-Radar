@@ -23,8 +23,8 @@ from pipelines.pipeline_dect import Validate
 def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--training', action='store_true')
-    args.add_argument('--log_sig', type=str, default='')
-    args.add_argument('--load_epoch', type=int, default='20')
+    args.add_argument('--log_sig', type=str, default='251119_142454')
+    args.add_argument('--load_epoch', type=int, default='30')
     args.add_argument('--nepochs', type=int, default=30)
     args.add_argument('--save_freq', type=int, default=10)
     args.add_argument('--lr', type=float, default=1e-3)
@@ -91,27 +91,32 @@ if __name__ == '__main__':
         if args.gen_enable:
             gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
 
-        model_load_ldr = torch.load(f'./logs/exp_251119_133450_RTNH/models/epoch30.pth')
-        dect_net.load_state_dict(state_dict=model_load_ldr['dect_state_dict'])
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader)
+        # model_load_ldr = torch.load(f'./logs/exp_251119_133450_RTNH/models/epoch30.pth')
+        dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
+        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
 
     else:
         for ei in range(n_epochs):
             if args.gen_enable:
-                gen_opt.zero_grad()
                 running_loss_gen = 0
+                gen_net.train()
 
                 if ei >=args.gen_stop:
                     gen_net.eval()
 
             running_loss_dect = 0
-            dect_opt.zero_grad()
+            dect_net.train()
+            
             for bi, batch_dict in enumerate(train_dataloader):
                 # print(f'ei:{ei}, bi:{bi}')
                 if args.gen_enable:
+                    gen_opt.zero_grad()
                     batch_dict = rdr_processor.forward(batch_dict)
+                
+                dect_opt.zero_grad()
                 batch_dict = ldr_processor.forward(batch_dict)
 
+                # print('Here::::::::2 ', batch_dict['voxel_num_points'],  {sum(batch_dict['voxel_num_points'])})
                 for key, val in batch_dict.items():
                     if key in ['points', 'voxels', 'voxel_coords', 'voxel_num_points', 'gt_boxes', 'sp_features', 'sp_indices']:
                         if isinstance(val, np.ndarray):
@@ -133,8 +138,9 @@ if __name__ == '__main__':
                     batch_dict['voxels'] = ldr_data
                     #bzyx
                     batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
-                    batch_dict['voxel_num_points'] = torch.tensor(Nvoxels).to(d)
-                    
+                    batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], torch.zeros((Nvoxels - batch_dict['voxel_num_points'].shape[0])).to(d)])
+                    # print('Here::::::::21 ', batch_dict['voxel_num_points'],  {sum(batch_dict['voxel_num_points'])})
+
                 if args.gen_enable:
                     # spconv unet
                     radar_st = SparseConvTensor(features=rdr_data.reshape((Nvoxels, -1)), 
@@ -161,13 +167,13 @@ if __name__ == '__main__':
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     loss_gen = gen_loss(pred, occ, union_st, lidar_st, R=5)
                     offs = attrs[:, :, :3]
-                    # print(f'HERE: {offs.shape}')
 
                     voxel_center_xyz = origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
                     pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
                     voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                     # print(voxel_center_xyz.shape, pred_offset_m.shape)
                     attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+
                     _pred_indices = pred.indices.detach()
                     _attrs = attrs.detach() # xyz
                     if (torch.isnan(_attrs)).any():
@@ -176,22 +182,29 @@ if __name__ == '__main__':
                     # select valid slots by probability
                     prob_thresh=0.9
                     probs = torch.sigmoid(occ)                 # [N,K]
-                    keep  = probs >= prob_thresh 
-                    points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
-                    intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
-                    points_xyz = np.ascontiguousarray(points_xyz)
-                    intensity = np.ascontiguousarray(intensity)
-                    print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+                    keep = probs >= prob_thresh 
+                    voxel_num_points = keep.sum(dim=1) #[N, ]
 
-                    # print(f'Here2 {_attrs.shape}')
-                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
-                    batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                    batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
-                    batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
-                    batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
-                    batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                    batch_dict['voxel_num_points'] = torch.tensor(Nvoxels).to(d)
-                    
+                    _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
+
+                    if _attrs.shape[0] < Nvoxels:
+                        batch_dict['voxels'] = _attrs.contiguous().float().to(d)
+                        batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
+                        batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
+                        batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                        batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                        batch_dict['voxel_num_points'] = voxel_num_points
+                    else:
+                        # print(f'Here2 {_attrs.shape}')
+                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
+                        batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                        batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
+                        batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
+                        batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                        batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                        batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                
+                # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
                 # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
                 dect_output = dect_net(batch_dict)
                 
