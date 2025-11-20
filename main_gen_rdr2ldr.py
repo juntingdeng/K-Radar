@@ -90,7 +90,9 @@ if __name__ == '__main__':
         model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{epoch}.pth')
         if args.gen_enable:
             gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
-        dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
+
+        model_load_ldr = torch.load(f'./logs/exp_251119_133450_RTNH/models/epoch30.pth')
+        dect_net.load_state_dict(state_dict=model_load_ldr['dect_state_dict'])
         ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader)
 
     else:
@@ -170,6 +172,17 @@ if __name__ == '__main__':
                     _attrs = attrs.detach() # xyz
                     if (torch.isnan(_attrs)).any():
                         print(f'_attrs has nan')
+
+                    # select valid slots by probability
+                    prob_thresh=0.9
+                    probs = torch.sigmoid(occ)                 # [N,K]
+                    keep  = probs >= prob_thresh 
+                    points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
+                    intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
+                    points_xyz = np.ascontiguousarray(points_xyz)
+                    intensity = np.ascontiguousarray(intensity)
+                    print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+
                     # print(f'Here2 {_attrs.shape}')
                     _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
                     batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]

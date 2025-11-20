@@ -257,86 +257,98 @@ class Validate:
                 if (idx_datum >= self.val_num_subset):
                     break
 
-            try:
-                # dict_out = self.network(dict_datum) # inference
-                # is_feature_inferenced = True
+            # try:
+            # dict_out = self.network(dict_datum) # inference
+            # is_feature_inferenced = True
 
-                is_feature_inferenced = True
+            is_feature_inferenced = True
 
-                dict_datum = self.rdr_processor.forward(dict_datum)
-                dict_datum = self.ldr_processor.forward(dict_datum)
+            dict_datum = self.rdr_processor.forward(dict_datum)
+            dict_datum = self.ldr_processor.forward(dict_datum)
 
-                for key, val in dict_datum.items():
-                    if key in ['points', 'voxels', 'voxel_coords', 'voxel_num_points', 'gt_boxes', 'sp_features', 'sp_indices']:
-                        if isinstance(val, np.ndarray):
-                            dict_datum[key] = torch.tensor(val).to(device)
-                        elif isinstance(val, torch.Tensor) and val.device != device:
-                            dict_datum[key] = dict_datum[key].to(device)
+            for key, val in dict_datum.items():
+                if key in ['points', 'voxels', 'voxel_coords', 'voxel_num_points', 'gt_boxes', 'sp_features', 'sp_indices']:
+                    if isinstance(val, np.ndarray):
+                        dict_datum[key] = torch.tensor(val).to(device)
+                    elif isinstance(val, torch.Tensor) and val.device != device:
+                        dict_datum[key] = dict_datum[key].to(device)
 
                 
                 
-                if self.gen_net:
-                    rdr_data = dict_datum['sp_features']
-                    if rdr_data.shape[0] < self.Nvoxels:
-                        rdr_data = torch.vstack([rdr_data, torch.zeros((self.Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
-                        dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], torch.zeros((self.Nvoxels - dict_datum['sp_indices'].shape[0], dict_datum['sp_indices'].shape[1])).to(d)])
+            if self.gen_net:
+                rdr_data = dict_datum['sp_features']
+                if rdr_data.shape[0] < self.Nvoxels:
+                    rdr_data = torch.vstack([rdr_data, torch.zeros((self.Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
+                    dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], torch.zeros((self.Nvoxels - dict_datum['sp_indices'].shape[0], dict_datum['sp_indices'].shape[1])).to(d)])
 
-                    
-                ldr_data = dict_datum['voxels']
-                lmin, lmax = ldr_data.min(), ldr_data.max()
-                if ldr_data.shape[0] < self.Nvoxels:
-                        dict_datum['voxels'] = torch.vstack([ldr_data, torch.zeros((self.Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
-                        dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], torch.zeros((self.Nvoxels - dict_datum['voxel_coords'].shape[0], dict_datum['voxel_coords'].shape[1])).to(d)])
+                
+            ldr_data = dict_datum['voxels']
+            lmin, lmax = ldr_data.min(), ldr_data.max()
+            if ldr_data.shape[0] < self.Nvoxels:
+                    ldr_data = torch.vstack([ldr_data, torch.zeros((self.Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
+                    dict_datum['voxels'] = ldr_data
+                    dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], torch.zeros((self.Nvoxels - dict_datum['voxel_coords'].shape[0], dict_datum['voxel_coords'].shape[1])).to(d)])
+            dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
+                
+            if self.gen_net:
+                #vsize: zyx
+                radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
+                                        indices=dict_datum['sp_indices'].int(), 
+                                        spatial_shape=self.spatial_size, 
+                                        batch_size=1)
+                
+                lidar_st = SparseConvTensor(features=ldr_data.reshape((self.Nvoxels, -1)), 
+                                        indices=dict_datum['voxel_coords'].int(), 
+                                        spatial_shape=self.spatial_size, 
+                                        batch_size=1)
+        
+                # Pseudocode
+                rad_idx = radar_st.indices           # [Nr,4]
+                lid_idx = lidar_st.indices           # [Nl,4]
+
+                all_idx = torch.cat([rad_idx, lid_idx], dim=0)
+                all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
+                union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
+
+                out = self.gen_net(union_st) 
+
+                pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                offs = attrs[:, :, :3]
+
+                voxel_center_xyz = self.origin + (torch.flip(out['st'].indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
+                pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
+                voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+                # print(voxel_center_xyz.shape, pred_offset_m.shape)
+                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+
+
+                _pred_indices = pred.indices.detach()
+                _attrs = attrs.detach()
+                if (torch.isnan(_attrs)).any():
+                    print(f'_attrs has nan')
+
+                # select valid slots by probability
+                prob_thresh=0.9
+                probs = torch.sigmoid(occ)                 # [N,K]
+                keep = probs >= prob_thresh 
+                _attrs = _attrs[keep][:, None, :]
+                # _pred_indices = _pred_indices[keep]
+                print(f'kept _attrs: {_attrs.shape}')
+
+                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
+                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
+                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
                 dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
-                
-                if self.gen_net:
-                    #vsize: zyx
-                    radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
-                                            indices=dict_datum['sp_indices'].int(), 
-                                            spatial_shape=self.spatial_size, 
-                                            batch_size=1)
-                    
-                    lidar_st = SparseConvTensor(features=ldr_data.reshape((self.Nvoxels, -1)), 
-                                            indices=dict_datum['voxel_coords'].int(), 
-                                            spatial_shape=self.spatial_size, 
-                                            batch_size=1)
             
-                    # Pseudocode
-                    rad_idx = radar_st.indices           # [Nr,4]
-                    lid_idx = lidar_st.indices           # [Nl,4]
+            dict_out = self.dect_net(dict_datum)
 
-                    all_idx = torch.cat([rad_idx, lid_idx], dim=0)
-                    all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
-                    union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
-
-                    out = self.gen_net(union_st) 
-
-                    pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    offs = attrs[:, :, :3]
-
-                    voxel_center_xyz = self.origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
-                    pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
-                    voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-                    # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
-                    _pred_indices = pred.indices.detach()
-                    _attrs = attrs.detach()
-                    if (torch.isnan(_attrs)).any():
-                        print(f'_attrs has nan')
-                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
-                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
-                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
-                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                    dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
-                
-                dict_out = self.dect_net(dict_datum)
-
-            except:
-                print('* Exception error (Pipeline): error during inferencing a sample -> empty prediction')
-                print('* Meta info: ', dict_out['meta'])
-                is_feature_inferenced = False
+            # except:
+            #     print('* Exception error (Pipeline): error during inferencing a sample -> empty prediction')
+            #     print('* Meta info: ', dict_out['meta'])
+            #     is_feature_inferenced = False
 
             if is_print_memory:
                 print('max_memory: ', torch.cuda.max_memory_allocated(device='cuda'))
