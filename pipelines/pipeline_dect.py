@@ -279,18 +279,26 @@ class Validate:
             if self.gen_net:
                 rdr_data = dict_datum['sp_features']
                 if rdr_data.shape[0] < self.Nvoxels:
-                    rdr_data = torch.vstack([rdr_data, torch.zeros((self.Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
-                    dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], torch.zeros((self.Nvoxels - dict_datum['sp_indices'].shape[0], dict_datum['sp_indices'].shape[1])).to(d)])
-
-                
+                    n = rdr_data.shape[0]
+                    while n < self.Nvoxels:
+                        rdr_data = torch.vstack([rdr_data, rdr_data[: self.Nvoxels - n]])
+                        dict_datum['sp_features'] = rdr_data
+                        #bzyx
+                        dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], dict_datum['sp_indices'][: self.Nvoxels- n]])
+                        n = rdr_data.shape[0]
+                                    
             ldr_data = dict_datum['voxels']
             lmin, lmax = ldr_data.min(), ldr_data.max()
             if ldr_data.shape[0] < self.Nvoxels:
-                    ldr_data = torch.vstack([ldr_data, torch.zeros((self.Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
+                n = ldr_data.shape[0]
+                while n< self.Nvoxels:
+                    ldr_data = torch.vstack([ldr_data, ldr_data[: self.Nvoxels - n]])
                     dict_datum['voxels'] = ldr_data
-                    dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], torch.zeros((self.Nvoxels - dict_datum['voxel_coords'].shape[0], dict_datum['voxel_coords'].shape[1])).to(d)])
-            dict_datum['voxel_num_points'] = torch.tensor(self.Nvoxels).to(d)
-                
+                    #bzyx
+                    dict_datum['voxel_coords'] = torch.vstack([dict_datum['voxel_coords'], dict_datum['voxel_coords'][: self.Nvoxels- n]])
+                    dict_datum['voxel_num_points'] = torch.concat([dict_datum['voxel_num_points'], dict_datum['voxel_num_points'][: self.Nvoxels - n]])
+                    n = ldr_data.shape[0]
+               
             if self.gen_net:
                 #vsize: zyx
                 radar_st = SparseConvTensor(features=rdr_data.reshape((self.Nvoxels, -1)), 
@@ -320,7 +328,7 @@ class Validate:
                 pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
                 voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                 # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+                attrs = torch.cat([voxel_center_xyz + pred_offset_m, 10*abs(attrs[:, :, -1][..., None])], dim=-1)
 
 
                 _pred_indices = pred.indices.detach()
@@ -336,7 +344,7 @@ class Validate:
                 _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
                 # _attrs = _attrs[keep][:, None, :]
 
-                vis = False
+                vis = True
                 if vis:
                     points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
                     intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)

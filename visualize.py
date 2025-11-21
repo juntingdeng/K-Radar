@@ -143,12 +143,27 @@ if __name__ == '__main__':
         lmin, lmax = ldr_data.min(), ldr_data.max()
         
         if rdr_data.shape[0] < Nvoxels:
-            rdr_data = torch.vstack([rdr_data, torch.zeros((Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
-            batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], torch.zeros((Nvoxels - batch_dict['sp_indices'].shape[0], batch_dict['sp_indices'].shape[1])).to(d)])
+            n = rdr_data.shape[0]
+            while n < Nvoxels:
+                rdr_data = torch.vstack([rdr_data, rdr_data[ :Nvoxels - n]])
+                batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], batch_dict['sp_indices'][: Nvoxels- n]])
+                n = rdr_data.shape[0]
+            
+            batch_dict['sp_features'] = rdr_data
+
+            # rdr_data = torch.vstack([rdr_data, torch.zeros((Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
+            # batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], torch.zeros((Nvoxels - batch_dict['sp_indices'].shape[0], batch_dict['sp_indices'].shape[1])).to(d)])
 
         if ldr_data.shape[0] < Nvoxels:
-            ldr_data = torch.vstack([ldr_data, torch.zeros((Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
-            batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
+            n = ldr_data.shape[0]
+            while n < Nvoxels:
+                ldr_data = torch.vstack([ldr_data, ldr_data[: Nvoxels - n]])
+                batch_dict['voxels'] = ldr_data
+                batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], batch_dict['voxel_coords'][: Nvoxels- n]])
+                batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], batch_dict['voxel_num_points'][: Nvoxels - n]])
+                n = ldr_data.shape[0]
+            # ldr_data = torch.vstack([ldr_data, torch.zeros((Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
+            # batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
 
         # spconv unet
         radar_st = SparseConvTensor(features=rdr_data.reshape((Nvoxels, -1)), 
@@ -182,6 +197,7 @@ if __name__ == '__main__':
         prob_thresh=args.thresh
         probs = torch.sigmoid(occ)                 # [N,K]
         keep  = probs >= prob_thresh 
+        print(f'# points in total: {keep.shape[0]*keep.shape[1]}, # kept: {keep.sum()}')
 
         # points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
         # intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
@@ -191,7 +207,7 @@ if __name__ == '__main__':
         intensity = _attrs[:,:, -1].reshape(-1)
 
         points_xyz = np.ascontiguousarray(points_xyz)
-        intensity = np.ascontiguousarray(intensity)
+        intensity = 10*abs(np.ascontiguousarray(intensity))
         print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
         
 

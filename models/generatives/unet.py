@@ -27,7 +27,7 @@ class SparseUNet3D(nn.Module):
         C = base_ch
         self.K, self.F = K, F
         # outputs: [exist K]+ [attrs K*F]
-        self.out_ch = K + K*F
+        self.out_ch = K*F
 
         # ---------------- Encoder ----------------
         self.enc0 = subm_block(in_ch, C, indice_key="subm0")
@@ -64,6 +64,7 @@ class SparseUNet3D(nn.Module):
             SubMConv3d(base_ch, 1, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
         )
 
+        self.act_head = nn.Sigmoid()
 
     # @staticmethod
     # def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
@@ -85,15 +86,15 @@ class SparseUNet3D(nn.Module):
     def forward(self, x: SparseConvTensor):
         # Encoder
         e0 = self.enc0(x)                       # subm @ full res
-        d0 = self.down0(e0); d0F = self.act0(self.bn0(d0.features))
+        d0 = self.down0(e0)
         d0 = d0.replace_feature(self.act0(self.bn0(d0.features)))
 
         e1 = self.enc1(d0)
-        d1 = self.down1(e1); d1F = self.act1(self.bn1(d1.features))
+        d1 = self.down1(e1)
         d1 = d1.replace_feature(self.act1(self.bn1(d1.features)))
 
         e2 = self.enc2(d1)
-        d2 = self.down2(e2); d2F = self.act2(self.bn2(d2.features))
+        d2 = self.down2(e2)
         d2 = d2.replace_feature(self.act2(self.bn2(d2.features)))
 
         b  = self.bottleneck(d2)
@@ -112,6 +113,7 @@ class SparseUNet3D(nn.Module):
 
         # occ = self.occ_head(c0)           # logits per active voxel
         pred = self.pred_head(c0)
+        # pred = pred.replace_feature(self.act_head(pred.features))
 
         N = pred.features.size(0)
         C = self.out_ch
@@ -248,7 +250,7 @@ class SynthLocalLoss(nn.Module):
         else:
             off_loss = pred_feat_st.features.sum()*0.0
             feat_loss = off_loss
-
+        # print(f'occ_loss:{occ_loss}, off_loss:{off_loss}, feat_loss:{feat_loss}')
         return self.w_occ*occ_loss + self.w_off*off_loss + self.w_feat*feat_loss
 
 def voxel_center(cfg):

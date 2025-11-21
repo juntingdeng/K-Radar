@@ -28,7 +28,7 @@ def arg_parser():
     args.add_argument('--nepochs', type=int, default=30)
     args.add_argument('--save_freq', type=int, default=10)
     args.add_argument('--lr', type=float, default=1e-3)
-    args.add_argument('--gen_stop', type=float, default=2)
+    args.add_argument('--gen_stop', type=float, default=10)
     args.add_argument('--gen_enable', action='store_true')
     return args.parse_args()
 
@@ -64,7 +64,7 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
-        gen_loss = SynthLocalLoss()
+        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=2.0)
         gen_opt = optim.SGD(gen_net.parameters(), lr=args.lr)
     else:
         gen_net = None
@@ -127,28 +127,38 @@ if __name__ == '__main__':
                 if args.gen_enable:
                     rdr_data = batch_dict['sp_features']
                     if rdr_data.shape[0] < Nvoxels:
-                        rdr_data = torch.vstack([rdr_data, torch.zeros((Nvoxels - rdr_data.shape[0], rdr_data.shape[1], rdr_data.shape[2])).to(d)])
+                        n = rdr_data.shape[0]
+                        while n < Nvoxels:
+                            rdr_data = torch.vstack([rdr_data, rdr_data[ :Nvoxels - n]])
+                            batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], batch_dict['sp_indices'][: Nvoxels- n]])
+                            n = rdr_data.shape[0]
+                        
+                        batch_dict['sp_features'] = rdr_data
                         #bzyx
-                        batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], torch.zeros((Nvoxels - batch_dict['sp_indices'].shape[0], batch_dict['sp_indices'].shape[1])).to(d)])
 
                 ldr_data = batch_dict['voxels']
                 lmin, lmax = ldr_data.min(), ldr_data.max()
                 if ldr_data.shape[0] < Nvoxels:
-                    ldr_data = torch.vstack([ldr_data, torch.zeros((Nvoxels - ldr_data.shape[0], ldr_data.shape[1], ldr_data.shape[2])).to(d)])
-                    batch_dict['voxels'] = ldr_data
-                    #bzyx
-                    batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], torch.zeros((Nvoxels - batch_dict['voxel_coords'].shape[0], batch_dict['voxel_coords'].shape[1])).to(d)])
-                    batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], torch.zeros((Nvoxels - batch_dict['voxel_num_points'].shape[0])).to(d)])
+                    n = ldr_data.shape[0]
+                    while n < Nvoxels:
+                        ldr_data = torch.vstack([ldr_data, ldr_data[: Nvoxels - n]])
+                        batch_dict['voxels'] = ldr_data
+                        #bzyx
+                        batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], batch_dict['voxel_coords'][: Nvoxels- n]])
+                        batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], batch_dict['voxel_num_points'][: Nvoxels - n]])
+                        n = ldr_data.shape[0]
                     # print('Here::::::::21 ', batch_dict['voxel_num_points'],  {sum(batch_dict['voxel_num_points'])})
-
+                    # print(f"batch_dict['voxels']: {batch_dict['voxels'][:, :, -1]}")
+                
                 if args.gen_enable:
                     # spconv unet
-                    radar_st = SparseConvTensor(features=rdr_data.reshape((Nvoxels, -1)), 
+                    # print('2', ei, bi, batch_dict['sp_features'].shape)
+                    radar_st = SparseConvTensor(features=batch_dict['sp_features'].reshape((Nvoxels, -1)), 
                                                 indices=batch_dict['sp_indices'].int(), #bzyx
                                                 spatial_shape=[z_size, y_size, x_size], 
                                                 batch_size=bs)
 
-                    lidar_st = SparseConvTensor(features=ldr_data.reshape((Nvoxels, -1)), 
+                    lidar_st = SparseConvTensor(features=batch_dict['voxels'].reshape((Nvoxels, -1)), 
                                                 indices=batch_dict['voxel_coords'].int(), #bzyx
                                                 spatial_shape=[z_size, y_size, x_size], 
                                                 batch_size=bs)
@@ -172,7 +182,7 @@ if __name__ == '__main__':
                     pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
                     voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                     # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, 10*abs(attrs[:, :, -1][..., None])], dim=-1)
 
                     _pred_indices = pred.indices.detach()
                     _attrs = attrs.detach() # xyz
@@ -184,6 +194,7 @@ if __name__ == '__main__':
                     probs = torch.sigmoid(occ)                 # [N,K]
                     keep = probs >= prob_thresh 
                     voxel_num_points = keep.sum(dim=1) #[N, ]
+                    # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
 
                     _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
 
@@ -195,7 +206,6 @@ if __name__ == '__main__':
                         batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
                         batch_dict['voxel_num_points'] = voxel_num_points
                     else:
-                        # print(f'Here2 {_attrs.shape}')
                         _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
                         batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
                         batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
@@ -203,6 +213,7 @@ if __name__ == '__main__':
                         batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
                         batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
                         batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
                 # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
@@ -211,14 +222,15 @@ if __name__ == '__main__':
                 loss_dect = dect_net.loss(dect_output)
                 
                 # loss = loss_dect + loss_gen
-                if args.gen_enable and ei < args.gen_stop:
-                    scaler.scale(loss_gen).backward()
-                    scaler.step(gen_opt)  
+                if args.gen_enable:
+                    if ei < args.gen_stop:
+                        loss_gen.backward()
+                        gen_opt.step()
                     running_loss_gen += loss_gen.detach().item()
 
-                scaler.scale(loss_dect).backward()
-                scaler.step(dect_opt)
-                scaler.update()
+                loss_dect.backward()
+                dect_opt.step()
+                # scaler.update()
                 running_loss_dect += loss_dect.detach().item()
                 
 
