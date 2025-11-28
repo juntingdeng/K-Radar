@@ -27,7 +27,7 @@ class SparseUNet3D(nn.Module):
         C = base_ch
         self.K, self.F = K, F
         # outputs: [exist K]+ [attrs K*F]
-        self.out_ch = K*F
+        self.out_ch = K*F # used to be K + K*F
 
         # ---------------- Encoder ----------------
         self.enc0 = subm_block(in_ch, C, indice_key="subm0")
@@ -58,13 +58,17 @@ class SparseUNet3D(nn.Module):
 
         # Head: point-wise (submanifold) 1x1 "conv"
         self.pred_head = spconv.SparseSequential(
-            SubMConv3d(base_ch, self.out_ch, kernel_size=1, bias=True, indice_key="head_feat")  # dx,dy,dz,i
+            SubMConv3d(base_ch, K*(F+1), kernel_size=1, bias=True, indice_key="head_feat")  # dx,dy,dz,i
         )
-        self.occ_head  = spconv.SparseSequential(
-            SubMConv3d(base_ch, 1, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
-        )
+        # self.occ_head  = spconv.SparseSequential(
+        #     SubMConv3d(base_ch, K, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
+        # )
+        # self.ints_head  = spconv.SparseSequential(
+        #     SubMConv3d(base_ch, K, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
+        # )
 
-        self.act_head = nn.Sigmoid()
+        self.occ_act = nn.Sigmoid()
+        self.ints_act = nn.ReLU()
 
     # @staticmethod
     # def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
@@ -113,16 +117,18 @@ class SparseUNet3D(nn.Module):
 
         # occ = self.occ_head(c0)           # logits per active voxel
         pred = self.pred_head(c0)
-        # pred = pred.replace_feature(self.act_head(pred.features))
+        # ints = self.ints_head(c0)
+        # occ = occ.replace_feature(self.occ_act(occ.features))
+        # ints = ints.replace_feature(self.ints_act(ints.features))
 
         N = pred.features.size(0)
         C = self.out_ch
         K, F = self.K, self.F
         feats = pred.features
         # split into slots
-        logits = feats[:, 0:K]                               # [N, K]
-        # offs   = feats[:, K:K+3*K].view(N, K, 3)             # [N, K, 3] (voxel units)
-        attrs  = feats[:, K: K+K*F].view(N, K, F)     # [N, K, F]
+        feats = feats.view(feats.shape[0], self.K, -1) # [N, K, 4+1 (x, y, z, i)]
+        logits = feats[:, :, 4:5] #feats[:, 0:K]                               # [N, K]
+        attrs  = feats[:, :, :4] #feats[:, K: K+K*F].view(N, K, F)     # [N, K, F]
         return {"st": pred, "logits": logits, "attrs": attrs}
 
 def _hash_zyx(b,z,y,x, Z,Y,X):
@@ -227,28 +233,36 @@ class SynthLocalLoss(nn.Module):
         self.w_occ, self.w_off, self.w_feat = w_occ, w_off, w_feat
         self.bce = nn.BCEWithLogitsLoss()
 
-    def forward(self, pred_feat_st: SparseConvTensor, pred_occ_st: SparseConvTensor,
+    def forward(self, logits, attrs, pred_st: SparseConvTensor,
                 radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1):
         # pred_feat_st.features: [Nr, 4] = dx,dy,dz,i
         # pred_occ_st.features : [Nr, 1]
-        Nr = pred_feat_st.features.size(0)
+
+        # logits: [N, K, 1]
+        # attrs: [N, K, 4], dx,dy,dz,i
+        Nr = attrs.size(0)
         matched, gt_d, gt_f = local_match(radar_st, lidar_st, R=R) #gt_d: zyx
-        gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
+        matched = matched.unsqueeze(1).repeat(1, 5)
+        # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
+        gt_d = torch.flip(gt_d, dims=[1]).unsqueeze(1).repeat(1, 5, 1) #gt_d: zyx -> xyz
+        gt_f = gt_f.view(gt_f.shape[0], -1, 4)
+        # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
 
         # Occupancy on all radar rows
-        occ_logits = pred_occ_st.squeeze(1)
         # print(f'here: {occ_logits.shape[0]}, {matched.shape[0]}')
-        occ_loss = self.bce(occ_logits.mean(-1), matched.float()) if Nr > 0 else occ_logits.sum()*0.0
+        occ_loss = self.bce(logits.squeeze(), matched.float()) if Nr > 0 else logits.sum()*0.0
 
         # Offsets & feature on matched only
         if matched.any():
             # print("!!matched!!")
-            pred_d = pred_feat_st.features[:, :3][matched] # xyz
-            pred_i = pred_feat_st.features[:, 3:4][matched]
+            pred_d = attrs[matched][:, :3] # xyz
+            pred_i = attrs[matched][:, 3: 4]
+            # print(f'pred_d: {pred_d.shape}, gt_d[matched]: {gt_d[matched].shape}')
             off_loss = F.smooth_l1_loss(pred_d, gt_d[matched])
-            feat_loss = F.l1_loss(pred_i, gt_f[matched, 3:4])  # if your LiDAR feat is intensity in channel 0
+            feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
+            # print(f'feat_loss: {feat_loss}')
         else:
-            off_loss = pred_feat_st.features.sum()*0.0
+            off_loss = attrs[matched][:, :, :3].sum()*0.0
             feat_loss = off_loss
         # print(f'occ_loss:{occ_loss}, off_loss:{off_loss}, feat_loss:{feat_loss}')
         return self.w_occ*occ_loss + self.w_off*off_loss + self.w_feat*feat_loss

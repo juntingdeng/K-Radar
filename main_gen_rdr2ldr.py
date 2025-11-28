@@ -19,6 +19,7 @@ from models.generatives.unet import *
 from depthEst.KDataset import *
 from torch.amp import GradScaler
 from pipelines.pipeline_dect import Validate
+# from models.generatives.unet_utlis import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
@@ -64,13 +65,13 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
-        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=2.0)
+        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=0.10)
         gen_opt = optim.SGD(gen_net.parameters(), lr=args.lr)
     else:
         gen_net = None
 
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg)
-    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr)
+    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
     ppl.set_validate()
@@ -162,7 +163,8 @@ if __name__ == '__main__':
                                                 indices=batch_dict['voxel_coords'].int(), #bzyx
                                                 spatial_shape=[z_size, y_size, x_size], 
                                                 batch_size=bs)
-                
+
+
                     # Pseudocode
                     rad_idx = radar_st.indices           # [Nr,4]
                     lid_idx = lidar_st.indices           # [Nl,4]
@@ -175,14 +177,15 @@ if __name__ == '__main__':
                     out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
 
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    loss_gen = gen_loss(pred, occ, union_st, lidar_st, R=5)
+                    loss_gen = gen_loss(occ, attrs, pred, union_st, lidar_st, R=5)
                     offs = attrs[:, :, :3]
+                    # print(f'offs: {offs}, ints: {ints}')
 
                     voxel_center_xyz = origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
                     pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
                     voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                     # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, 10*abs(attrs[:, :, -1][..., None])], dim=-1)
+                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
                     _pred_indices = pred.indices.detach()
                     _attrs = attrs.detach() # xyz
@@ -191,12 +194,14 @@ if __name__ == '__main__':
 
                     # select valid slots by probability
                     prob_thresh=0.9
-                    probs = torch.sigmoid(occ)                 # [N,K]
-                    keep = probs >= prob_thresh 
+                    probs = torch.sigmoid(occ)                 # [N,K,1]
+                    keep = (probs >= prob_thresh)
                     voxel_num_points = keep.sum(dim=1) #[N, ]
+                    keep = keep.repeat(1,1,4) 
+                    # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
                     # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
 
-                    _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
+                    _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
                     if _attrs.shape[0] < Nvoxels:
                         batch_dict['voxels'] = _attrs.contiguous().float().to(d)
@@ -226,10 +231,37 @@ if __name__ == '__main__':
                     if ei < args.gen_stop:
                         loss_gen.backward()
                         gen_opt.step()
+
+                        # for name, param in gen_net.named_parameters():
+                        #     if param.grad is not None:
+                        #         print('gen_net: ', name, param.grad.mean(), param.grad.abs().max())
+                        #     else:
+                        #         print(name, "has no grad!")
+                        
+                        # with torch.no_grad():
+                        #     for name, p in gen_net.named_parameters():
+                        #         if p.grad is None:
+                        #             continue
+
+                        #         grad_norm = p.grad.norm().item()
+                        #         weight_norm = p.data.norm().item()
+                        #         # assume Adam/AdamW or SGD; use your lr here
+                        #         lr = gen_opt.param_groups[0]['lr']
+
+                        #         rel_update = lr * grad_norm / (weight_norm + 1e-12)
+                        #         print(f"gen_net: {name:30s} grad_norm={grad_norm:.3e}  "
+                        #             f"w_norm={weight_norm:.3e}  "
+                        #             f"rel_update={rel_update:.3e}")
+
                     running_loss_gen += loss_gen.detach().item()
 
                 loss_dect.backward()
                 dect_opt.step()
+                # for name, param in gen_net.named_parameters():
+                #     if param.grad is not None:
+                #         print('gen_net: ', name, param.grad.mean(), param.grad.abs().max())
+                #     else:
+                #         print(name, "has no grad!")
                 # scaler.update()
                 running_loss_dect += loss_dect.detach().item()
                 

@@ -217,7 +217,7 @@ def save_triplet_views(pred_xyz, radar_xyz, lidar_xyz,
 import torch
 import numpy as np
 
-def unet_slots_to_xyz_attrs(pred, voxel_size, origin, prob_thresh=0.3, clamp_offsets=True):
+def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3, clamp_offsets=True):
     """
     pred: {"st": SparseConvTensor, "logits": [N,K], "offs": [N,K,3], "attrs": [N,K,F]}
     voxel_size: (vx, vy, vz) meters
@@ -227,10 +227,10 @@ def unet_slots_to_xyz_attrs(pred, voxel_size, origin, prob_thresh=0.3, clamp_off
       attrs: (M,F) float64 attributes aligned with xyz (e.g., intensity in [:,0])
     """
     st      = pred["st"]
-    logits  = pred["logits"]     # [N,K]
+    # logits  = pred["logits"]     # [N,K]
     # offs    = pred["offs"]       # [N,K,3]  (voxel units!)
-    attrs   = pred["attrs"]      # [N,K,F]
-    offs    = attrs[:, :, :3]    # [N,K,3]  (voxel units!)
+    # attrs   = pred["attrs"]      # [N,K,F]
+    # offs    = attrs[:, :, :3]    # [N,K,3]  (voxel units!)
 
 
     # 1) centers from spconv indices [b,z,y,x]  →  [x,y,z] meters
@@ -245,21 +245,19 @@ def unet_slots_to_xyz_attrs(pred, voxel_size, origin, prob_thresh=0.3, clamp_off
     ], dim=1)                     # [N,3] meters
 
     # 2) select valid slots by probability
-    probs = torch.sigmoid(logits)                 # [N,K]
-    keep  = probs >= prob_thresh                  # [N,K] bool
+    # probs = torch.sigmoid(logits)                 # [N,K]
+    keep  = occ >= prob_thresh                  # [N,K] bool
 
     # 3) offsets: voxel units → meters
     if clamp_offsets:
         offs = torch.clamp(offs, -0.5, 0.5)       # optional, keeps points inside voxel
     scale = offs.new_tensor([vx, vy, vz])         # [3]
     offs_m = offs * scale                         # [N,K,3] meters
+    print('centers: ', centers)
 
     # 4) assemble world xyz per slot
-    xyz = centers[:, None, :] + offs_m              # [N,K,3]
-    F   = attrs.shape[-1]
+    xyz = centers[:, None, :].repeat(1, 5, 1) #+ offs_m              # [N,K,3]
+    # F   = attrs.shape[-1]
     xyz  = xyz[keep].detach().cpu().numpy().astype(np.float64)    # (M,3)
-    attrs= attrs[keep].detach().cpu().numpy().astype(np.float64)  # (M,F)
-    return xyz, attrs
-
-import numpy as np
-import matplotlib.pyplot as plt
+    # attrs= attrs[keep].detach().cpu().numpy().astype(np.float64)  # (M,F)
+    return xyz

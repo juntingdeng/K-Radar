@@ -11,6 +11,7 @@ from depthEst.KDataset import *
 from torch.amp import GradScaler
 from pipelines.pipeline_dect import Validate
 from visualize_unet_points import *
+from models.generatives.unet_utlis import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
@@ -176,6 +177,8 @@ if __name__ == '__main__':
                                     spatial_shape=[z_size, y_size, x_size], 
                                     batch_size=bs)
         
+        # matched, gt_offsets, gt_features = local_match_new(radar_st, lidar_st)
+        
         rad_idx = radar_st.indices           # [Nr,4]
         lid_idx = lidar_st.indices           # [Nl,4]
 
@@ -184,14 +187,19 @@ if __name__ == '__main__':
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
         
         out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
-        pred, occ, attrs = out['st'], out['logits'], out['attrs']
-        offs = attrs[:, :, :3] 
+        # pred, occ, attrs = out['st'], out['logits'], out['attrs']
+        # offs = attrs[:, :, :3] 
+        pred, occ, offs, ints = out['st'], out['logits'], out['offs'], out['ints']
+
+        matched, gt_d, gt_f = local_match(radar_st, lidar_st, R=1) #gt_d: zyx
+        gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}')
 
         voxel_center_xyz = origin + (torch.flip(out['st'].indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
         voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-        # print(voxel_center_xyz.shape, pred_offset_m.shape)
-        attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, -1][..., None]], dim=-1)
+        print(voxel_center_xyz.shape, pred_offset_m.shape, ints.shape)
+        attrs = torch.cat([voxel_center_xyz + pred_offset_m, ints[..., None]], dim=-1)
         
         # select valid slots by probability
         prob_thresh=args.thresh
@@ -207,15 +215,31 @@ if __name__ == '__main__':
         intensity = _attrs[:,:, -1].reshape(-1)
 
         points_xyz = np.ascontiguousarray(points_xyz)
-        intensity = 10*abs(np.ascontiguousarray(intensity))
+        intensity = np.ascontiguousarray(intensity)
         print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+
+        # plot gt
+        voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+        offset_m_gt = gt_d * vsize_xyz.to(d)  # scale voxel-units → meters
+        # voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+        print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
+        attrs_gt = torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, -1][..., None]], dim=-1).detach().cpu().numpy()
+
+        points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
+        intensity_gt = attrs_gt[:,:, -1].reshape(-1)
+
+        points_xyz_gt = np.ascontiguousarray(points_xyz_gt)
+        intensity_gt = np.ascontiguousarray(intensity_gt)
+        print(f'points:{points_xyz_gt.shape}, intensity:{intensity_gt.shape}')
         
 
         # out_tmp = out
         # out_tmp['st'] = union_st
         # Build pred points from your UNet output
-        pred_xyz, pred_attr = unet_slots_to_xyz_attrs(
+        pred_xyz = unet_slots_to_xyz_attrs(
             out,                       # your dict
+            offs,
+            occ,
             voxel_size=[0.05, 0.05, 0.1],   # <-- set to your grid
             origin=origin,       # <-- set to your grid origin
             prob_thresh=prob_thresh,
@@ -247,16 +271,16 @@ if __name__ == '__main__':
         print(f'points_xyz: {points_xyz.shape[0]}, pred_xyz: {pred_xyz.shape[0]}, \
                rdr_points_xyz: {rdr_points_xyz.shape[0]}, ldr_points_xyz: {ldr_points_xyz.shape[0]}')
 
-        print(f'points_xyz: {intensity.mean()}, pred_xyz: {pred_attr[:,-1].mean()}, \
+        print(f'points_xyz: {intensity.mean()},\
                rdr_points_xyz: {rdr_intensities.mean()}, ldr_points_xyz: {ldr_intensities.mean()}')
         
-        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+        save_open3d_render_fixed_pose(points_xyz=attrs, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
                                       pose=pose)
         save_open3d_render_fixed_pose(points_xyz=pred_xyz, 
-                                      intensities=pred_attr[:,-1], 
+                                      intensities=intensity, 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"pred2_{set}_{bi}.png"), 
                                       pose=pose)
@@ -270,7 +294,12 @@ if __name__ == '__main__':
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"ldr_{set}_{bi}.png"),  
                                       pose=pose)
-
+        
+        save_open3d_render_fixed_pose(points_xyz=attrs_gt, 
+                                      intensities=intensity_gt, 
+                                      boxes=gt_boxes,
+                                      filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
+                                      pose=pose)
 
 
         # train_kdataset.vis_in_open3d(batch_dict)

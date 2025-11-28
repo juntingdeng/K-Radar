@@ -36,6 +36,7 @@ from utils.util_optim import clip_grad_norm_
 from depthEst.KDataset import *
 from models.generatives.unet import *
 # from visualize import *
+from visualize_unet_points import *
 
 d = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -321,15 +322,16 @@ class Validate:
 
                 out = self.gen_net(union_st) 
 
-                pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                # pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                # offs = attrs[:, :, :3]
+                pred, occ, attrs = out['st'], out['logits'],  out['attrs']
                 offs = attrs[:, :, :3]
 
                 voxel_center_xyz = self.origin + (torch.flip(out['st'].indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
                 pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
                 voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                 # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                attrs = torch.cat([voxel_center_xyz + pred_offset_m, 10*abs(attrs[:, :, -1][..., None])], dim=-1)
-
+                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
                 _pred_indices = pred.indices.detach()
                 _attrs = attrs.detach()
@@ -338,13 +340,14 @@ class Validate:
 
                 # select valid slots by probability
                 prob_thresh=0.9
-                probs = torch.sigmoid(occ)                 # [N,K]
-                keep = probs >= prob_thresh 
+                probs = torch.sigmoid(occ)                 # [N,K,1]
+                keep = (probs >= prob_thresh)
                 voxel_num_points = keep.sum(dim=1) #[N, ]
-                _attrs = torch.where(keep.unsqueeze(-1), _attrs, torch.zeros_like(_attrs))
+                keep = keep.repeat(1,1,4) 
                 # _attrs = _attrs[keep][:, None, :]
+                _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
-                vis = True
+                vis = False
                 if vis:
                     points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
                     intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
