@@ -26,10 +26,10 @@ def arg_parser():
     args.add_argument('--training', action='store_true')
     args.add_argument('--log_sig', type=str, default='251119_142454')
     args.add_argument('--load_epoch', type=int, default='30')
-    args.add_argument('--nepochs', type=int, default=30)
-    args.add_argument('--save_freq', type=int, default=10)
+    args.add_argument('--nepochs', type=int, default=200)
+    args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
-    args.add_argument('--gen_stop', type=float, default=10)
+    args.add_argument('--gen_stop', type=float, default=200)
     args.add_argument('--gen_enable', action='store_true')
     return args.parse_args()
 
@@ -65,7 +65,7 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
-        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=0.10)
+        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0)
         gen_opt = optim.SGD(gen_net.parameters(), lr=args.lr)
     else:
         gen_net = None
@@ -177,7 +177,7 @@ if __name__ == '__main__':
                     out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
 
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    loss_gen = gen_loss(occ, attrs, pred, union_st, lidar_st, R=5)
+                    loss_gen = gen_loss(occ, attrs, pred, union_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
                     offs = attrs[:, :, :3]
                     # print(f'offs: {offs}, ints: {ints}')
 
@@ -281,7 +281,7 @@ if __name__ == '__main__':
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
                 loss_dect_curve.append(running_loss_dect/(max(1, len(train_dataloader))))
-                if (ei < args.gen_stop and (ei+1) % 1 == 0) or (ei >=args.gen_stop and (ei+1) % save_freq == 0):
+                if (ei < args.gen_stop and (ei+1) % save_freq == 0) or (ei >=args.gen_stop and (ei+1) % save_freq == 0):
                     dict_util = {
                         'epoch': ei+1,
                         'gen_state_dict': gen_net.state_dict(),

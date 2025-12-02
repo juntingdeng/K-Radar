@@ -13,6 +13,10 @@ def subm_block(in_ch, out_ch, kernel_size=3, indice_key=None):
                    bias=False, indice_key=indice_key),
         nn.BatchNorm1d(out_ch),
         nn.ReLU(inplace=True),
+        SubMConv3d(out_ch, out_ch, kernel_size=kernel_size, padding=kernel_size//2,
+                   bias=False, indice_key=indice_key),
+        nn.BatchNorm1d(out_ch),
+        nn.ReLU(inplace=True),
     )
 
 class SparseUNet3D(nn.Module):
@@ -140,7 +144,7 @@ def build_hash(indices, spatial_shape):
     return _hash_zyx(b,z,y,x, Z,Y,X)
 
 def make_offsets(R):
-    rng = torch.arange(-R, R+1, 1)
+    rng = torch.arange(-R, R+1, 10)
     dz, dy, dx = torch.meshgrid(rng, rng, rng, indexing="ij")
     offs = torch.stack([dz.reshape(-1), dy.reshape(-1), dx.reshape(-1)], dim=1)  # [K,3], K=(2R+1)^3
     return offs
@@ -223,6 +227,75 @@ def local_match(radar: SparseConvTensor, lidar: SparseConvTensor, R=1):
 
     return matched_mask, gt_offsets, gt_feat
 
+import torch
+from spconv.pytorch import SparseConvTensor
+
+def local_match_closest(radar: SparseConvTensor, lidar: SparseConvTensor):
+    """
+    For each radar voxel, find the closest LiDAR voxel (in voxel index space)
+    within the same batch and use it as ground truth.
+
+    Returns:
+        matched_mask: [Nr] bool, True if a LiDAR voxel exists in that batch
+        gt_offsets:   [Nr, 3] float, (dz, dy, dx) in voxel units
+        gt_feat:      [Nr, C_lidar] float, LiDAR features of the matched voxel
+    """
+    assert tuple(radar.spatial_shape) == tuple(lidar.spatial_shape)
+    device = radar.indices.device
+
+    r_idx = radar.indices        # [Nr, 4] = [b, z, y, x]
+    l_idx = lidar.indices        # [Nl, 4]
+    Nr = r_idx.size(0)
+    C_lidar = lidar.features.size(1)
+
+    topk=10
+    # outputs
+    matched_mask = torch.zeros(Nr, dtype=torch.bool, device=device)
+    gt_offsets = torch.zeros((Nr, topk, 3), dtype=radar.features.dtype, device=device)
+    gt_feat = torch.zeros((Nr, topk, C_lidar), dtype=lidar.features.dtype, device=device)
+
+    # process per batch
+    batch_ids = r_idx[:, 0].unique()
+    for b in batch_ids:
+        r_mask = (r_idx[:, 0] == b)
+        l_mask = (l_idx[:, 0] == b)
+
+        r_inds_b = r_mask.nonzero(as_tuple=False).squeeze(1)  # global radar rows
+        l_inds_b = l_mask.nonzero(as_tuple=False).squeeze(1)  # global lidar rows
+
+        if l_inds_b.numel() == 0:
+            # no lidar points in this batch → leave as unmatched
+            continue
+
+        # positions in voxel index space: [Nb_radar, 3], [Nb_lidar, 3]
+        r_pos = r_idx[r_inds_b, 1:].to(torch.float32)  # (z,y,x)
+        l_pos = l_idx[l_inds_b, 1:].to(torch.float32)
+
+        # pairwise distances: [Nb_radar, Nb_lidar]
+        # You can change p=1 for L1 / Manhattan distance if you prefer
+        dist = torch.cdist(r_pos, l_pos, p=2)   
+        # print(f'dist shape:{dist.shape}')
+
+        # nn_dist_, nn_idx_ = dist.min(dim=1)              # [Nb_radar]
+        nn_dist, nn_idx = torch.topk(dist, k=topk, dim=1, largest=False)
+        # print(f'+++++++++++++++++nn_idx_: {nn_idx_}')
+        # print(f'+++++++++++++++++nn_idx: {nn_idx.shape}')
+        # map local LiDAR indices back to global rows
+        l_rows = l_inds_b[nn_idx]                      # [Nb_radar]
+
+        # mark matched (always True here since we have at least one lidar in batch)
+        matched_mask[r_inds_b] = True
+
+        # gt features
+        gt_feat[r_inds_b] = lidar.features[l_rows]
+
+        # offsets in voxel units: lidar - radar
+        # offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:]).to(radar.features.dtype)  # [Nb_radar, 3]
+        offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1).repeat(1, topk, 1)).to(radar.features.dtype)  # [Nb_radar, 3]
+        gt_offsets[r_inds_b] = offs
+
+    # return matched_mask, gt_offsets, gt_feat
+    return matched_mask.unsqueeze(1).repeat(1, topk).reshape(-1), gt_offsets.reshape(-1, 3), gt_feat.reshape(-1, 20)
 
 import torch.nn.functional as F
 import torch.nn as nn
@@ -234,20 +307,22 @@ class SynthLocalLoss(nn.Module):
         self.bce = nn.BCEWithLogitsLoss()
 
     def forward(self, logits, attrs, pred_st: SparseConvTensor,
-                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1):
+                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
         # pred_feat_st.features: [Nr, 4] = dx,dy,dz,i
         # pred_occ_st.features : [Nr, 1]
 
         # logits: [N, K, 1]
         # attrs: [N, K, 4], dx,dy,dz,i
+        logits = logits.unsqueeze(1).repeat(1, 10, 1, 1).reshape(-1, logits.shape[-2], logits.shape[-1])
+        attrs = attrs.unsqueeze(1).repeat(1, 10, 1, 1).reshape(-1, attrs.shape[-2], attrs.shape[-1])
         Nr = attrs.size(0)
-        matched, gt_d, gt_f = local_match(radar_st, lidar_st, R=R) #gt_d: zyx
+        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st) #gt_d: zyx
         matched = matched.unsqueeze(1).repeat(1, 5)
         # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
         gt_d = torch.flip(gt_d, dims=[1]).unsqueeze(1).repeat(1, 5, 1) #gt_d: zyx -> xyz
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
-
+        
         # Occupancy on all radar rows
         # print(f'here: {occ_logits.shape[0]}, {matched.shape[0]}')
         occ_loss = self.bce(logits.squeeze(), matched.float()) if Nr > 0 else logits.sum()*0.0
@@ -259,8 +334,19 @@ class SynthLocalLoss(nn.Module):
             pred_i = attrs[matched][:, 3: 4]
             # print(f'pred_d: {pred_d.shape}, gt_d[matched]: {gt_d[matched].shape}')
             off_loss = F.smooth_l1_loss(pred_d, gt_d[matched])
-            feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
-            # print(f'feat_loss: {feat_loss}')
+            # feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
+
+            offs = attrs[:, :, :3]
+            voxel_center_xyz = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+            pred_offset_m = offs * vsize_xyz.to('cuda')  # scale voxel-units → meters
+            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 10, 1, 1)
+            voxel_center_xyz = voxel_center_xyz.reshape(-1, 5, voxel_center_xyz.shape[-1])
+            # print(voxel_center_xyz.shape, pred_offset_m.shape)
+            attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
+            # print(f'attrs:{attrs.shape}')
+            feat_loss = F.l1_loss(attrs[matched], gt_f[matched])
+            
         else:
             off_loss = attrs[matched][:, :, :3].sum()*0.0
             feat_loss = off_loss

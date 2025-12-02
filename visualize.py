@@ -15,8 +15,8 @@ from models.generatives.unet_utlis import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
-    args.add_argument('--log_sig', type=str, default='251119_142454')
-    args.add_argument('--load_epoch', type=str, default='30')
+    args.add_argument('--log_sig', type=str, default='251128_154223')
+    args.add_argument('--load_epoch', type=str, default='20')
     args.add_argument('--set', type=str, default='test')
     args.add_argument('--thresh', type=float, default=0.9)
     return args.parse_args()
@@ -185,32 +185,40 @@ if __name__ == '__main__':
         all_idx = torch.cat([rad_idx, lid_idx], dim=0)
         all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
-        
-        out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
-        # pred, occ, attrs = out['st'], out['logits'], out['attrs']
-        # offs = attrs[:, :, :3] 
-        pred, occ, offs, ints = out['st'], out['logits'], out['offs'], out['ints']
 
-        matched, gt_d, gt_f = local_match(radar_st, lidar_st, R=1) #gt_d: zyx
+        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st) #gt_d: zyx
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}')
 
-        voxel_center_xyz = origin + (torch.flip(out['st'].indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+        out = gen_net(union_st)
+        pred, occ, attrs = out['st'], out['logits'], out['attrs']
+        offs = attrs[:, :, :3]
+        # print(f'offs: {offs}, ints: {ints}')
+
+        voxel_center_xyz = origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
         voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-        print(voxel_center_xyz.shape, pred_offset_m.shape, ints.shape)
-        attrs = torch.cat([voxel_center_xyz + pred_offset_m, ints[..., None]], dim=-1)
+        # print(voxel_center_xyz.shape, pred_offset_m.shape)
+        print(f'pred_offset_m:{pred_offset_m}, voxel_center_xyz:{voxel_center_xyz}')
+        attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
+
+        _pred_indices = pred.indices.detach()
+        _attrs = attrs.detach() # xyz
+        if (torch.isnan(_attrs)).any():
+            print(f'_attrs has nan')
         
         # select valid slots by probability
-        prob_thresh=args.thresh
-        probs = torch.sigmoid(occ)                 # [N,K]
-        keep  = probs >= prob_thresh 
-        print(f'# points in total: {keep.shape[0]*keep.shape[1]}, # kept: {keep.sum()}')
+        prob_thresh=0.9
+        probs = torch.sigmoid(occ)                 # [N,K,1]
+        keep = (probs > prob_thresh)
+        voxel_num_points = keep.sum(dim=1) #[N, ]
+        keep = keep.repeat(1,1,4) 
+        # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
+        # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
 
-        # points_xyz = attrs[keep][:, :3].detach().cpu().numpy().reshape(-1, 3)
-        # intensity = attrs[keep][:, -1].detach().cpu().numpy().reshape(-1)
+        _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs)).detach().cpu().numpy()
 
-        _attrs = torch.where(keep.unsqueeze(-1), attrs, torch.zeros_like(attrs)).detach().cpu().numpy()
+        # _attrs = torch.where(keep.unsqueeze(-1), attrs, torch.zeros_like(attrs)).detach().cpu().numpy()
         points_xyz = _attrs[:,:, :3].reshape(-1, 3)
         intensity = _attrs[:,:, -1].reshape(-1)
 
@@ -221,9 +229,13 @@ if __name__ == '__main__':
         # plot gt
         voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         offset_m_gt = gt_d * vsize_xyz.to(d)  # scale voxel-units → meters
-        # voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 5, 1)
+        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 10, 1, 1)
+        voxel_center_xyz_gt = voxel_center_xyz_gt.reshape(-1, 5, voxel_center_xyz_gt.shape[-1])
+        offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
+        gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
-        attrs_gt = torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, -1][..., None]], dim=-1).detach().cpu().numpy()
+        attrs_gt = torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
         points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
         intensity_gt = attrs_gt[:,:, -1].reshape(-1)
@@ -274,7 +286,7 @@ if __name__ == '__main__':
         print(f'points_xyz: {intensity.mean()},\
                rdr_points_xyz: {rdr_intensities.mean()}, ldr_points_xyz: {ldr_intensities.mean()}')
         
-        save_open3d_render_fixed_pose(points_xyz=attrs, 
+        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
@@ -295,10 +307,10 @@ if __name__ == '__main__':
                                       filename=os.path.join(fig_path, f"ldr_{set}_{bi}.png"),  
                                       pose=pose)
         
-        save_open3d_render_fixed_pose(points_xyz=attrs_gt, 
+        save_open3d_render_fixed_pose(points_xyz=attrs_gt[:,:,:3].reshape(-1, 3), 
                                       intensities=intensity_gt, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
+                                      filename=os.path.join(fig_path, f"gt_{set}_{bi}.png"), 
                                       pose=pose)
 
 

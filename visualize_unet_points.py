@@ -246,7 +246,9 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
 
     # 2) select valid slots by probability
     # probs = torch.sigmoid(logits)                 # [N,K]
-    keep  = occ >= prob_thresh                  # [N,K] bool
+    keep  = occ >= prob_thresh                  # [N,K, 1] bool
+    print(f'keep shape:{keep.shape}')
+    keep = keep.squeeze()
 
     # 3) offsets: voxel units → meters
     if clamp_offsets:
@@ -256,7 +258,7 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
     print('centers: ', centers)
 
     # 4) assemble world xyz per slot
-    xyz = centers[:, None, :].repeat(1, 5, 1) #+ offs_m              # [N,K,3]
+    xyz = centers[:, :].unsqueeze(1).repeat(1, 5, 1) + offs_m              # [N,K,3]
     # F   = attrs.shape[-1]
     xyz  = xyz[keep].detach().cpu().numpy().astype(np.float64)    # (M,3)
     # attrs= attrs[keep].detach().cpu().numpy().astype(np.float64)  # (M,F)
