@@ -61,7 +61,7 @@ class KRadarDetection_v2_0(Dataset):
             cfg_from_yaml = True
             self.cfg=cfg.DATASET
 
-        self.max_voxels = cfg.DATASET.max_num_voxels
+        # self.max_voxels = cfg.DATASET.max_num_voxels
         self.label = self.cfg.label
         self.label_version = self.cfg.get('label_version', 'v2_0')
         self.load_label_in_advance = True if self.label.remove_0_obj else False

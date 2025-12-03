@@ -13,10 +13,10 @@ def subm_block(in_ch, out_ch, kernel_size=3, indice_key=None):
                    bias=False, indice_key=indice_key),
         nn.BatchNorm1d(out_ch),
         nn.ReLU(inplace=True),
-        SubMConv3d(out_ch, out_ch, kernel_size=kernel_size, padding=kernel_size//2,
-                   bias=False, indice_key=indice_key),
-        nn.BatchNorm1d(out_ch),
-        nn.ReLU(inplace=True),
+        # SubMConv3d(out_ch, out_ch, kernel_size=kernel_size, padding=kernel_size//2,
+        #            bias=False, indice_key=indice_key),
+        # nn.BatchNorm1d(out_ch),
+        # nn.ReLU(inplace=True),
     )
 
 class SparseUNet3D(nn.Module):

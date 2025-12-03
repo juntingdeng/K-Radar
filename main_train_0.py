@@ -9,8 +9,8 @@ os.environ['CUDA_VISIBLE_DEVICES']= '0'
 
 from pipelines.pipeline_detection_v1_0 import PipelineDetection_v1_0
 
-PATH_CONFIG = './configs/cfg_PVRCNNPP.yml'
-# PATH_CONFIG = './configs/cfg_RTNH_wide.yml'
+# PATH_CONFIG = './configs/cfg_PVRCNNPP.yml'
+PATH_CONFIG = './configs/cfg_RTNH_wide.yml'
 
 if __name__ == '__main__':
     pline = PipelineDetection_v1_0(path_cfg=PATH_CONFIG, mode='train')

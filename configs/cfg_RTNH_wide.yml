@@ -104,7 +104,7 @@ MODEL:
     INPUT_DIM: 4 # in [4, 5] / 5 for Doppler
     
     SIMPLIFIED_POINTNET:
-      IS_WITH_SIMPLIFIED_POINTNET: True
+      IS_WITH_SIMPLIFIED_POINTNET: False
       OUT_CHANNEL: 32
       POOLING: 'max'
 

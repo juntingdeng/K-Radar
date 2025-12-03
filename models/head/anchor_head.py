@@ -155,6 +155,7 @@ class AnchorHeadSingle(nn.Module):
     def get_cls_layer_loss(self):
         cls_preds = self.forward_ret_dict['cls_preds']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
+        print(f'===========box_cls_labels: {box_cls_labels.shape}')
         batch_size = int(cls_preds.shape[0])
         cared = box_cls_labels >= 0  # [N, num_anchors]
         positives = box_cls_labels > 0
@@ -170,6 +171,7 @@ class AnchorHeadSingle(nn.Module):
         reg_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_weights /= torch.clamp(pos_normalizer, min=1.0)
         cls_targets = box_cls_labels * cared.type_as(box_cls_labels)
+        # print(f'===========cls_targets: {box_cls_labels.shape}')
         cls_targets = cls_targets.unsqueeze(dim=-1)
 
         cls_targets = cls_targets.squeeze(dim=-1)
@@ -177,8 +179,10 @@ class AnchorHeadSingle(nn.Module):
             *list(cls_targets.shape), self.num_class + 1, dtype=cls_preds.dtype, device=cls_targets.device
         )
         one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)
+        # print(f'==========cls_loss, num_class: {self.num_class}')
         cls_preds = cls_preds.view(batch_size, -1, self.num_class)
         one_hot_targets = one_hot_targets[..., 1:]
+        # print(f'==========cls_preds: {cls_preds.shape}, one_hot_targets: {one_hot_targets.shape}')
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
         cls_loss = cls_loss_src.sum() / batch_size
 

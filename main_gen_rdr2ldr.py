@@ -14,6 +14,7 @@ import argparse
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
 from models.skeletons import PVRCNNPlusPlus
+from models.skeletons.rdr_base import RadarBase
 from models.generatives.unet import *
 
 from depthEst.KDataset import *
@@ -31,15 +32,22 @@ def arg_parser():
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--gen_stop', type=float, default=200)
     args.add_argument('--gen_enable', action='store_true')
+    args.add_argument('--model_cfg', type=str, default='ldr')
     return args.parse_args()
 
 
 if __name__ == '__main__':
     d = 'cuda' if torch.cuda.is_available() else 'cpu'
-    cfg_path = './configs/cfg_rdr_ldr.yml'
-    cfg = cfg_from_yaml_file(cfg_path, cfg)
+    # cfg_path = './configs/cfg_rdr_ldr.yml'
     args = arg_parser()
     training = args.training
+    
+    if args.model_cfg == 'ldr':
+        cfg_path = './configs/cfg_rdr_ldr.yml'
+    elif args.model_cfg == 'rdr':
+        cfg_path = './configs/cfg_rdr_ldr_sps.yml'
+    cfg = cfg_from_yaml_file(cfg_path, cfg)
+    model_cfg = cfg.MODEL.SKELETON
 
     x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
     vsize_xyz = cfg.DATASET.roi.voxel_size
@@ -61,6 +69,7 @@ if __name__ == '__main__':
 
     rdr_processor = RadarSparseProcessor(cfg)
     ldr_processor = LdrPreprocessor(cfg)
+    simplified_pointnet = nn.Linear(4, 32, bias=False).to(d)
 
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
@@ -70,7 +79,8 @@ if __name__ == '__main__':
     else:
         gen_net = None
 
-    dect_net = Rdr2LdrPvrcnnPP(cfg=cfg)
+    dect_net = Rdr2LdrPvrcnnPP(cfg=cfg) if args.model_cfg == 'ldr' else RadarBase(cfg=cfg)
+    dect_net = dect_net.to(d)
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
@@ -127,6 +137,7 @@ if __name__ == '__main__':
 
                 if args.gen_enable:
                     rdr_data = batch_dict['sp_features']
+                    # print(f"sp_features:{batch_dict['sp_features'].shape}")
                     if rdr_data.shape[0] < Nvoxels:
                         n = rdr_data.shape[0]
                         while n < Nvoxels:
@@ -203,28 +214,50 @@ if __name__ == '__main__':
 
                     _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
-                    if _attrs.shape[0] < Nvoxels:
-                        batch_dict['voxels'] = _attrs.contiguous().float().to(d)
-                        batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
-                        batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
-                        batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
-                        batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                        batch_dict['voxel_num_points'] = voxel_num_points
+                    if model_cfg == 'PVRCNNPlusPlus':
+                        if _attrs.shape[0] < Nvoxels:
+                            batch_dict['voxels'] = _attrs.contiguous().float().to(d)
+                            batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
+                            batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
+                            batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                            batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                            batch_dict['voxel_num_points'] = voxel_num_points
+                        else:
+                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
+                            batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                            batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
+                            batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
+                            batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                            batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                            batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                    
                     else:
-                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
-                        batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                        batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
-                        batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
-                        batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
-                        batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                        batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        if _attrs.shape[0] < Nvoxels:
+                            batch_dict['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
+                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
+                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
+                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                            batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
+                            # batch_dict['voxel_num_points'] = voxel_num_points
+                        else:
+                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
+                            batch_dict['sp_features'] = _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
+                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
+                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
+                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                            batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
+                            # batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        
+                        # voxel_features = simplified_pointnet(batch_dict['sp_features'])
+                        # voxel_features = torch.max(voxel_features, dim=1, keepdim=False)[0]
+                        # batch_dict['_sp_features'] = voxel_features
                         
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
                 # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
                 dect_output = dect_net(batch_dict)
                 
-                loss_dect = dect_net.loss(dect_output)
+                loss_dect = dect_net.head.loss(dect_output)
                 
                 # loss = loss_dect + loss_gen
                 if args.gen_enable:

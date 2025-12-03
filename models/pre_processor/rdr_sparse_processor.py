@@ -102,7 +102,6 @@ class RadarSparseProcessor(nn.Module):
                 batch_num_pts_in_voxels.append(voxel_num_points)
 
             voxel_features, voxel_coords, voxel_num_points = torch.cat(batch_voxel_features), torch.cat(batch_voxel_coords), torch.cat(batch_num_pts_in_voxels)
-            
             if self.is_with_simplified_pointnet:
                 voxel_features = self.simplified_pointnet(voxel_features)
                 if self.pooling_method == 'max':
@@ -116,6 +115,7 @@ class RadarSparseProcessor(nn.Module):
                 normalizer = torch.clamp_min(voxel_num_points.view(-1,1), min=1.0).type_as(voxel_features)
                 voxel_features = voxel_features/normalizer
 
+            # print(f'============ voxel_features:{voxel_features.shape}')
             dict_item['sp_features'] = voxel_features.contiguous()
             dict_item['sp_indices'] = voxel_coords.int()
             

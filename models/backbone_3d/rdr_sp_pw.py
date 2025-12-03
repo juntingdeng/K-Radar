@@ -35,7 +35,7 @@ class RadarSparseBackbone(nn.Module):
         self.spatial_shape = [z_shape, y_shape, x_shape]
 
         cfg_model = self.cfg.MODEL
-        input_dim = cfg_model.PRE_PROCESSOR.INPUT_DIM # 4
+        input_dim = 4 #cfg_model.PRE_PROCESSOR.INPUT_DIM # 4
 
         list_enc_channel = cfg_model.BACKBONE.ENCODING.CHANNEL
         list_enc_padding = cfg_model.BACKBONE.ENCODING.PADDING
@@ -103,7 +103,7 @@ class RadarSparseBackbone(nn.Module):
 
     def forward(self, dict_item):
         sparse_features, sparse_indices = dict_item['sp_features'], dict_item['sp_indices']
-
+        # print(f'sparse_features: {sparse_features.shape}')
         input_sp_tensor = spconv.SparseConvTensor(
             features=sparse_features,
             indices=sparse_indices.int(),
