@@ -19,7 +19,7 @@ class RadarSparseBackbone(nn.Module):
         if self.cfg_dataset_ver2:
             roi = self.cfg.DATASET.roi
             x_min, y_min, z_min, x_max, y_max, z_max = roi.xyz
-            grid_size = roi.grid_size
+            grid_size = roi.voxel_size #roi.grid_size
         else:
             self.roi = cfg.DATASET.RDR_SP_CUBE.ROI
             grid_size = cfg.DATASET.RDR_SP_CUBE.GRID_SIZE
@@ -28,9 +28,9 @@ class RadarSparseBackbone(nn.Module):
             y_min, y_max = self.roi['y']
             z_min, z_max = self.roi['z']
 
-        z_shape = int(round((z_max-z_min) / grid_size))
-        y_shape = int(round((y_max-y_min) / grid_size))
-        x_shape = int(round((x_max-x_min) / grid_size))
+        z_shape = int(round((z_max-z_min) / grid_size[2]))
+        y_shape = int(round((y_max-y_min) / grid_size[1]))
+        x_shape = int(round((x_max-x_min) / grid_size[0]))
 
         self.spatial_shape = [z_shape, y_shape, x_shape]
 

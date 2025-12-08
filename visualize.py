@@ -1,10 +1,12 @@
 import open3d as o3d
 import numpy as np
 import argparse
+import matplotlib.pyplot as plt
 
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
 from models.skeletons import PVRCNNPlusPlus
+from models.skeletons.rdr_base import RadarBase
 from models.generatives.unet import *
 
 from dataset_utils.KDataset import *
@@ -19,6 +21,7 @@ def arg_parser():
     args.add_argument('--load_epoch', type=str, default='20')
     args.add_argument('--set', type=str, default='test')
     args.add_argument('--thresh', type=float, default=0.9)
+    args.add_argument('--model_cfg', type=str, default='ldr')
     return args.parse_args()
 
 def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
@@ -86,12 +89,14 @@ def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
 
 if __name__ == '__main__':
     d = 'cuda' if torch.cuda.is_available() else 'cpu'
-    cfg_path = './configs/cfg_rdr_ldr.yml'
-    cfg = cfg_from_yaml_file(cfg_path, cfg)
+    
     args = arg_parser()
     log_sig = args.log_sig
     load_epoch = args.load_epoch
     set = args.set
+
+    cfg_path = './configs/cfg_rdr_ldr.yml' if args.model_cfg == 'ldr' else './configs/cfg_rdr_ldr_sps.yml'
+    cfg = cfg_from_yaml_file(cfg_path, cfg)
 
     x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
     vsize_xyz = cfg.DATASET.roi.voxel_size
@@ -117,7 +122,7 @@ if __name__ == '__main__':
 
     Nvoxels = cfg.DATASET.max_num_voxels
     gen_net = SparseUNet3D(in_ch=20)
-    dect_net = Rdr2LdrPvrcnnPP(cfg=cfg)
+    dect_net = Rdr2LdrPvrcnnPP(cfg=cfg) if args.model_cfg == 'ldr' else RadarBase(cfg=cfg)
     model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{load_epoch}.pth')
     gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
     dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
@@ -224,7 +229,7 @@ if __name__ == '__main__':
 
         points_xyz = np.ascontiguousarray(points_xyz)
         intensity = np.ascontiguousarray(intensity)
-        print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+        # print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
 
         # plot gt
         voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
@@ -234,7 +239,7 @@ if __name__ == '__main__':
         voxel_center_xyz_gt = voxel_center_xyz_gt.reshape(-1, 5, voxel_center_xyz_gt.shape[-1])
         offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
-        print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
+        # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
         attrs_gt = torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
         points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
@@ -242,7 +247,7 @@ if __name__ == '__main__':
 
         points_xyz_gt = np.ascontiguousarray(points_xyz_gt)
         intensity_gt = np.ascontiguousarray(intensity_gt)
-        print(f'points:{points_xyz_gt.shape}, intensity:{intensity_gt.shape}')
+        # print(f'points:{points_xyz_gt.shape}, intensity:{intensity_gt.shape}')
         
 
         # out_tmp = out
@@ -269,6 +274,7 @@ if __name__ == '__main__':
         # Save all with the SAME pose
         fig_path = os.path.join('visualize', log_sig, load_epoch)
         os.makedirs(fig_path, exist_ok=True)
+        print(f'image save path: {fig_path}')
         list_tuple_objs = batch_dict['meta'][0]['label']
         dx, dy, dz = batch_dict['meta'][0]['calib']
         gt_boxes = []
@@ -314,4 +320,28 @@ if __name__ == '__main__':
                                       pose=pose)
 
 
-        # train_kdataset.vis_in_open3d(batch_dict)
+        # radar_pts: (Nr, 3), lidar_pts: (Nl, 3), pred_pts_union: (Np, 3)
+        bin_x, radar_err, lidar_err, radar_cnt, lidar_cnt = modality_error_vs_range_numpy_with_zero(
+            rdr_points_xyz, ldr_points_xyz, points_xyz, num_bins=700
+        )
+
+        # Plot
+        plt.figure()
+        plt.plot(bin_x, radar_err, label="Radar error")
+        plt.xlabel("x distance (m)")
+        plt.ylabel("Avg NN error to prediction (m)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(fig_path, f"error_rdr{bi}.png"))
+
+        plt.figure()
+        plt.plot(bin_x, lidar_err, label="LiDAR error")
+        plt.xlabel("x distance (m)")
+        plt.ylabel("Avg NN error to prediction (m)")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(fig_path, f"error_ldr_{bi}.png"))
+
+        plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"error_cdf_{bi}.png"))

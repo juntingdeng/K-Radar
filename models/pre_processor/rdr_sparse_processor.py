@@ -38,6 +38,8 @@ class RadarSparseProcessor(nn.Module):
             z_size = int(round((z_max-z_min)/self.grid_size))
 
             max_num_vox = int(x_size*y_size*z_size*max_vox_percentage)
+            print(f'------- max_num_vox: {max_num_vox}')
+            max_num_vox = min(max_num_vox, 16000)
 
             self.gen_voxels = PointToVoxel(
                 vsize_xyz = [self.grid_size, self.grid_size, self.grid_size],

@@ -33,7 +33,7 @@ from utils.kitti_eval.eval import get_official_eval_result
 from utils.kitti_eval.eval_revised import get_official_eval_result_revised
 
 from utils.util_optim import clip_grad_norm_
-from depthEst.KDataset import *
+from dataset_utils.KDataset import *
 from models.generatives.unet import *
 # from visualize import *
 from visualize_unet_points import *
@@ -52,10 +52,11 @@ def get_local_time_str():
     return f'{tm_year}{tm_mon}{tm_mday}_{tm_hour}{tm_min}{tm_sec}'
 
 class Validate:
-    def __init__(self, cfg, gen_net, dect_net, spatial_size=[]):
+    def __init__(self, cfg, gen_net, dect_net, spatial_size=[], model_cfg='ldr'):
         self.is_validate = True
         self.gen_net = gen_net
         self.dect_net = dect_net
+        self.model_cfg = model_cfg
         self.cfg = cfg
         self.is_consider_subset = self.cfg.VAL.IS_CONSIDER_VAL_SUBSET
         self.val_per_epoch_subset = self.cfg.VAL.VAL_PER_EPOCH_SUBSET
@@ -391,23 +392,40 @@ class Validate:
                 # print(f'keep: {keep.shape}')
                 # _pred_indices = torch.where(keep, _pred_indices, torch.zeros_like(_pred_indices))
                 # print(f'_pred_indices:{_pred_indices.shape}'
-
-                if _attrs.shape[0] < self.Nvoxels:
-                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)
-                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
-                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
-                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
-                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                    dict_datum['voxel_num_points'] = voxel_num_points
+                
+                if self.model_cfg == 'ldr':
+                    if _attrs.shape[0] < self.Nvoxels:
+                        dict_datum['voxels'] = _attrs.contiguous().float().to(d)
+                        dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
+                        dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
+                        dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
+                        dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                        dict_datum['voxel_num_points'] = voxel_num_points
+                    else:
+                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                        dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                        dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
+                        dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
+                        dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                        dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                        dict_datum['voxel_num_points'] = voxel_num_points[topN]
+                    
                 else:
-                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                    dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                    dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
-                    dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
-                    dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
-                    dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                    dict_datum['voxel_num_points'] = voxel_num_points[topN]
+                    if _attrs.shape[0] < self.Nvoxels:
+                        dict_datum['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
+                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
+                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
+                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
+                        dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
+                    else:
+                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                        dict_datum['sp_features'] =  _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
+                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
+                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
+                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                        dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
             
+            # print(f"------ dict_datum: {dict_datum['sp_features'].shape}")
             dict_out = self.dect_net(dict_datum)
 
             # except:

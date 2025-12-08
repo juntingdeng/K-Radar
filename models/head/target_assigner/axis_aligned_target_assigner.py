@@ -78,6 +78,7 @@ class AxisAlignedTargetAssigner(object):
                     selected_classes = cur_gt_classes[mask]
                 else:
                     feature_map_size = anchors.shape[:3]
+                    # print(f'=================feature_map_size: {feature_map_size}, anchors: {anchors.shape}')
                     anchors = anchors.view(-1, anchors.shape[-1])
                     selected_classes = cur_gt_classes[mask]
 

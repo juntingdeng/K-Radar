@@ -56,6 +56,9 @@ class AnchorHeadSingle(nn.Module):
             anchor_ndim=self.box_coder.code_size
         )
         self.anchors = [x.cuda() for x in anchors]
+        # print(f'//////////////  anchor_generator_cfg: {anchor_generator_cfg}, grid_size: {grid_size}, point_cloud_range:{point_cloud_range}, code_size:{self.box_coder.code_size}')
+        # for anchor in self.anchors:
+        #     print(f'//////////////anchor shape: {anchor.shape}')
         self.target_assigner = self.get_target_assigner(anchor_target_cfg)
 
         self.forward_ret_dict = {}
@@ -155,7 +158,7 @@ class AnchorHeadSingle(nn.Module):
     def get_cls_layer_loss(self):
         cls_preds = self.forward_ret_dict['cls_preds']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
-        print(f'===========box_cls_labels: {box_cls_labels.shape}')
+        # print(f'===========box_cls_labels: {box_cls_labels.shape}')
         batch_size = int(cls_preds.shape[0])
         cared = box_cls_labels >= 0  # [N, num_anchors]
         positives = box_cls_labels > 0

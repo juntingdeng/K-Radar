@@ -47,7 +47,7 @@ if __name__ == '__main__':
     elif args.model_cfg == 'rdr':
         cfg_path = './configs/cfg_rdr_ldr_sps.yml'
     cfg = cfg_from_yaml_file(cfg_path, cfg)
-    model_cfg = cfg.MODEL.SKELETON
+    model_cfg = args.model_cfg
 
     x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
     vsize_xyz = cfg.DATASET.roi.voxel_size
@@ -83,7 +83,7 @@ if __name__ == '__main__':
     dect_net = dect_net.to(d)
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
     scaler = GradScaler()
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
+    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg)
     ppl.set_validate()
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')
@@ -214,7 +214,7 @@ if __name__ == '__main__':
 
                     _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
-                    if model_cfg == 'PVRCNNPlusPlus':
+                    if model_cfg == 'ldr':
                         if _attrs.shape[0] < Nvoxels:
                             batch_dict['voxels'] = _attrs.contiguous().float().to(d)
                             batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
@@ -257,7 +257,7 @@ if __name__ == '__main__':
                 # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
                 dect_output = dect_net(batch_dict)
                 
-                loss_dect = dect_net.head.loss(dect_output)
+                loss_dect = dect_net.head.loss(dect_output) if args.model_cfg == 'rdr' else dect_net.loss(dect_output)
                 
                 # loss = loss_dect + loss_gen
                 if args.gen_enable:
@@ -321,6 +321,7 @@ if __name__ == '__main__':
                         'dect_state_dict': dect_net.state_dict(),
                         'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
+                        'lr': args.lr
                     }
 
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))
@@ -334,6 +335,7 @@ if __name__ == '__main__':
                         'dect_state_dict': dect_net.state_dict(),
                         # 'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
+                        'lr': args.lr
                     }
 
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))

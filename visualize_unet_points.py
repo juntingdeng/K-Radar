@@ -2,6 +2,7 @@
 # (content truncated in the last run) — full module is rewritten here
 from typing import Tuple, Optional
 import numpy as np
+from scipy.spatial import cKDTree
 
 try:
     import torch
@@ -263,3 +264,156 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
     xyz  = xyz[keep].detach().cpu().numpy().astype(np.float64)    # (M,3)
     # attrs= attrs[keep].detach().cpu().numpy().astype(np.float64)  # (M,F)
     return xyz
+
+def nn_error_vs_x_numpy_with_zero(gt_points, pred_points, num_bins, x_min, x_max):
+    """
+    Compute NN error per x-bin (in meters), returning 0 where no GT exists.
+    """
+    bins = np.linspace(x_min, x_max, num_bins + 1)
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+    mean_errors = np.zeros(num_bins, dtype=np.float64)
+    counts = np.zeros(num_bins, dtype=np.int32)
+
+    if gt_points.shape[0] == 0:
+        # No GT at all → all errors remain zero
+        return bin_centers, mean_errors, counts
+
+    # Build KD-tree for predicted points
+    tree = cKDTree(pred_points[:, :3])
+
+    # NN distances for GT points
+    dists, _ = tree.query(gt_points[:, :3], k=1)
+
+    xs = gt_points[:, 0]
+    bin_idx = np.digitize(xs, bins) - 1
+
+    # Keep only valid bin indices
+    valid = (bin_idx >= 0) & (bin_idx < num_bins)
+    dists = dists[valid]
+    bin_idx = bin_idx[valid]
+
+    # Aggregate
+    np.add.at(mean_errors, bin_idx, dists)
+    np.add.at(counts, bin_idx, 1)
+
+    # Mean error per bin, bins with 0 count stay 0 automatically
+    nonzero = counts > 0
+    mean_errors[nonzero] = mean_errors[nonzero] / counts[nonzero]
+
+    return bin_centers, mean_errors, counts
+
+
+def modality_error_vs_range_numpy_with_zero(
+    radar_points,
+    lidar_points,
+    pred_points,
+    num_bins=50,
+    x_min=None,
+    x_max=None,
+):
+    """
+    Compute per-bin NN error for radar/LiDAR separately.
+    If a bin has no GT points (radar or LiDAR), its error is 0.
+    """
+    # Determine shared x-range
+    all_x = np.concatenate([
+        radar_points[:, 0] if radar_points.size > 0 else np.array([]),
+        lidar_points[:, 0] if lidar_points.size > 0 else np.array([])
+    ])
+
+    if x_min is None:
+        x_min = float(all_x.min()) if all_x.size > 0 else 0.0
+    if x_max is None:
+        x_max = float(all_x.max()) if all_x.size > 0 else 1.0
+
+    # Radar curve
+    bx_radar, radar_err, radar_cnt = nn_error_vs_x_numpy_with_zero(
+        radar_points, pred_points, num_bins, x_min, x_max
+    )
+    # LiDAR curve
+    bx_lidar, lidar_err, lidar_cnt = nn_error_vs_x_numpy_with_zero(
+        lidar_points, pred_points, num_bins, x_min, x_max
+    )
+
+    return bx_radar, radar_err, lidar_err, radar_cnt, lidar_cnt
+
+import matplotlib.pyplot as plt
+
+def plot_mapping_error_cdf(
+    radar_dists,
+    lidar_dists,
+    unit="m",
+    title="CDF - Error",
+    save_path=None,
+    ax=None,
+):
+    """
+    Plot CDF of NN mapping error for radar and LiDAR, similar to Fig. 5.
+
+    Args:
+        radar_points: (Nr, >=3) numpy array [x, y, z, ...]
+        lidar_points: (Nl, >=3) numpy array [x, y, z, ...]
+        pred_points:  (Np, >=3) numpy array [x, y, z, ...]
+        unit:         "m" (meters) or "cm" (centimeters)
+        title:        figure title
+        show:         if True, calls plt.show()
+        ax:           optional matplotlib axis to draw on
+
+    Returns:
+        fig, ax: matplotlib Figure and Axes objects
+        (radar_x, radar_y): CDF for radar
+        (lidar_x, lidar_y): CDF for LiDAR
+    """
+
+    # Convert units
+    scale = 100.0 if unit == "cm" else 1.0
+    radar_vals = radar_dists * scale
+    lidar_vals = lidar_dists * scale
+
+    # Compute CDFs only from points that exist
+    radar_x, radar_y = make_empirical_cdf(radar_vals)
+    lidar_x, lidar_y = make_empirical_cdf(lidar_vals)
+
+    radar_x, radar_y = np.concatenate(([0.0], radar_x)), np.concatenate(([0.0], radar_y))
+    lidar_x, lidar_y = np.concatenate(([0.0], lidar_x)), np.concatenate(([0.0], lidar_y))
+
+    # Plot
+    if ax is None:
+        fig, ax = plt.subplots()
+    else:
+        fig = ax.figure
+
+    if radar_x.size > 0:
+        ax.plot(radar_x, radar_y, label="Radar")
+    if lidar_x.size > 0:
+        ax.plot(lidar_x, lidar_y, label="LiDAR")
+
+    ax.set_xlabel("Error ({})".format(unit))
+    ax.set_ylabel("CDF")
+    ax.set_ylim([0, 1])
+    ax.grid(True)
+    ax.legend()
+    ax.set_title(title)
+
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+
+    return fig, ax, (radar_x, radar_y), (lidar_x, lidar_y)
+
+def make_empirical_cdf(errors):
+    """
+    Compute empirical CDF for a 1D array of per-point errors.
+    Ensures that bins with zero counts are naturally excluded.
+    """
+    errors = np.asarray(errors)
+    errors = errors[errors > 0]  # optional: remove exactly zero if desired
+
+    if errors.size == 0:
+        return np.array([]), np.array([])
+
+    x = np.sort(errors)
+    n = x.size
+    y = np.arange(1, n + 1, dtype=float) / n
+    return x, y
+
