@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision
 from spconv.pytorch import SparseConvTensor, SubMConv3d, SparseConv3d, SparseInverseConv3d
 import argparse
+import random
 
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
@@ -33,6 +34,10 @@ def arg_parser():
     args.add_argument('--gen_stop', type=float, default=200)
     args.add_argument('--gen_enable', action='store_true')
     args.add_argument('--model_cfg', type=str, default='ldr')
+    args.add_argument('--ldr_pretrained', action='store_true')
+    args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
+    args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
+    args.add_argument('--eps', type=float, default=0.5)
     return args.parse_args()
 
 
@@ -40,6 +45,7 @@ if __name__ == '__main__':
     d = 'cuda' if torch.cuda.is_available() else 'cpu'
     # cfg_path = './configs/cfg_rdr_ldr.yml'
     args = arg_parser()
+    rand_eps = args.eps
     training = args.training
     
     if args.model_cfg == 'ldr':
@@ -75,12 +81,16 @@ if __name__ == '__main__':
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
         gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0)
-        gen_opt = optim.SGD(gen_net.parameters(), lr=args.lr)
+        gen_opt = optim.SGD(gen_net.parameters(), lr=1e-2)
     else:
         gen_net = None
 
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg) if args.model_cfg == 'ldr' else RadarBase(cfg=cfg)
     dect_net = dect_net.to(d)
+    if args.ldr_pretrained:
+        model_load_ldr = torch.load(f'./logs/exp_{args.ldr_pretrained_log_sig}_RTNH/models/epoch{args.ldr_pretrained_epoch}.pth')
+        dect_net.load_state_dict(state_dict=model_load_ldr['dect_state_dict'])
+
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg)
@@ -215,21 +225,22 @@ if __name__ == '__main__':
                     _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
                     if model_cfg == 'ldr':
-                        if _attrs.shape[0] < Nvoxels:
-                            batch_dict['voxels'] = _attrs.contiguous().float().to(d)
-                            batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
-                            batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
-                            batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
-                            batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                            batch_dict['voxel_num_points'] = voxel_num_points
-                        else:
-                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
-                            batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                            batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
-                            batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
-                            batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
-                            batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                            batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        if random.random() < rand_eps:
+                            if _attrs.shape[0] < Nvoxels:
+                                batch_dict['voxels'] = _attrs.contiguous().float().to(d)
+                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
+                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
+                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                                batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                                batch_dict['voxel_num_points'] = voxel_num_points
+                            else:
+                                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
+                                batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
+                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
+                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                                batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                                batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     
                     else:
                         if _attrs.shape[0] < Nvoxels:
