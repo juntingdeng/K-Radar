@@ -29,7 +29,7 @@ DATASET:
   NAME: 'KRadarDetection_v2_0'
 
   NUM: # Total number of frames, just make this blank
-  max_num_voxels: 16000
+  max_num_voxels: 10000
   path_data:
     list_dir_kradar: ['/home/juntingd/research/3DImage/lidar/K-radar/data/sequences']
     split: ['/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/train.txt', '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/test.txt']
@@ -279,7 +279,7 @@ MODEL:
         MULTI_CLASSES_NMS: False
         NMS_PRE_MAXSIZE: 9000
         NMS_POST_MAXSIZE: 512
-        NMS_THRESH: 0.8
+        NMS_THRESH: 0.1
       TEST:
         NMS_TYPE: nms_gpu
         MULTI_CLASSES_NMS: False

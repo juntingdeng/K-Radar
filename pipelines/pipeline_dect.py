@@ -12,6 +12,9 @@ from tqdm import tqdm
 import shutil
 import time
 from torch.utils.data import Subset
+import random
+import pickle
+import copy
 
 # Ingnore numba warning
 from numba.core.errors import NumbaWarning
@@ -120,7 +123,7 @@ class Validate:
             print('* Exception error: check VAL.REGARDING')
         ### Consider output of network and dataset ###
 
-    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False, data_loader=None):
+    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False, data_loader=None, save_res = False):
         # self.network.eval()
         if self.gen_net:
             self.gen_net.eval()
@@ -316,12 +319,14 @@ class Validate:
                 # Pseudocode
                 rad_idx = radar_st.indices           # [Nr,4]
                 lid_idx = lidar_st.indices           # [Nl,4]
+                
 
                 all_idx = torch.cat([rad_idx, lid_idx], dim=0)
                 all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
                 union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
 
                 out = self.gen_net(union_st) 
+                # print(f"/////////////indices shape: {rad_idx.shape}, {lid_idx.shape}, {union_st.indices.shape}, {out['st'].indices.shape}")
 
                 # pred, occ, attrs = out['st'], out['logits'], out['attrs']
                 # offs = attrs[:, :, :3]
@@ -392,37 +397,56 @@ class Validate:
                 # print(f'keep: {keep.shape}')
                 # _pred_indices = torch.where(keep, _pred_indices, torch.zeros_like(_pred_indices))
                 # print(f'_pred_indices:{_pred_indices.shape}'
+                if save_res:
+                    dict_cp = copy.deepcopy(dict_datum)
+                    for key, val in dict_datum.items():
+                        if hasattr(val, 'device'):
+                            dict_cp[key] = val.to('cpu')
+                    with open(os.path.join(self.path_log, f'gt{idx_datum}.pickle'), 'wb') as file:
+                        pickle.dump(dict_cp, file)
                 
                 if self.model_cfg == 'ldr':
-                    if _attrs.shape[0] < self.Nvoxels:
-                        dict_datum['voxels'] = _attrs.contiguous().float().to(d)
-                        dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
-                        dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
-                        dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
-                        dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                        dict_datum['voxel_num_points'] = voxel_num_points
-                    else:
-                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                        dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                        dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
-                        dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
-                        dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
-                        dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                        dict_datum['voxel_num_points'] = voxel_num_points[topN]
+                    if random.random() < 1:
+                        if _attrs.shape[0] < self.Nvoxels:
+                            dict_datum['voxels'] = _attrs.contiguous().float().to(d)
+                            dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
+                            dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
+                            dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
+                            dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                            dict_datum['voxel_num_points'] = voxel_num_points
+                        else:
+                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                            dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                            dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
+                            dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
+                            dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
+                            dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                            dict_datum['voxel_num_points'] = voxel_num_points[topN]
+
+
+                    if save_res:
+                        
+                        dict_cp = dict()
+                        dict_cp['voxels'] =  _attrs.contiguous().float().to('cpu')
+                        dict_cp['voxel_coords'] =  _pred_indices.int().to('cpu')[topN.to('cpu')]
+                        
+                        with open(os.path.join(self.path_log, f'syn{idx_datum}.pickle'), 'wb') as file:
+                            pickle.dump(dict_cp, file)
+                        
                     
                 else:
                     if _attrs.shape[0] < self.Nvoxels:
                         dict_datum['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
-                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)
-                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)
-                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)
+                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
+                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
+                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
                         dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
                     else:
                         _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
                         dict_datum['sp_features'] =  _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
-                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, self.spatial_size[0]-1)[topN]
-                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[1]-1)[topN]
-                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[2]-1)[topN]
+                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
+                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
+                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
                         dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
             
             # print(f"------ dict_datum: {dict_datum['sp_features'].shape}")

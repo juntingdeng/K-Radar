@@ -241,6 +241,8 @@ class Rdr2LdrPvrcnnPP(PVRCNNPlusPlus):
         self.roi_head = self.roi_head.to(device)
         self.point_head = self.point_head.to(device)
         self.pfe = self.pfe.to(device)
+
+        # print(f'PP self.training: {self.training}')
     
     def forward(self, batch_dict):
         batch_dict = self.vfe(batch_dict)
@@ -270,6 +272,7 @@ class Rdr2LdrPvrcnnPP(PVRCNNPlusPlus):
         if self.training:
             return batch_dict
         else:
+            # print(f"Here post_processing, {self.roi_head.model_cfg.NMS_CONFIG['TRAIN' if self.training else 'TEST']}")
             batch_dict = self.post_processing(batch_dict)
             
             return batch_dict

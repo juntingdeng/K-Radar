@@ -2,6 +2,7 @@ import open3d as o3d
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
+import random
 
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
@@ -200,7 +201,7 @@ if __name__ == '__main__':
         offs = attrs[:, :, :3]
         # print(f'offs: {offs}, ints: {ints}')
 
-        voxel_center_xyz = origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+        voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
         voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
         # print(voxel_center_xyz.shape, pred_offset_m.shape)
@@ -292,8 +293,10 @@ if __name__ == '__main__':
         print(f'points_xyz: {intensity.mean()},\
                rdr_points_xyz: {rdr_intensities.mean()}, ldr_points_xyz: {ldr_intensities.mean()}')
         
-        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
-                                      intensities=intensity, 
+        randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
+        _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
+        save_open3d_render_fixed_pose(points_xyz=points_xyz[10000:], 
+                                      intensities=intensity[10000:], 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
                                       pose=pose)

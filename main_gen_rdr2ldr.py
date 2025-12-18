@@ -11,6 +11,7 @@ import torchvision
 from spconv.pytorch import SparseConvTensor, SubMConv3d, SparseConv3d, SparseInverseConv3d
 import argparse
 import random
+import pickle
 
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
@@ -26,15 +27,18 @@ from pipelines.pipeline_dect import Validate
 def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--training', action='store_true')
-    args.add_argument('--log_sig', type=str, default='251119_142454')
-    args.add_argument('--load_epoch', type=int, default='30')
-    args.add_argument('--nepochs', type=int, default=200)
-    args.add_argument('--save_freq', type=int, default=20)
+    args.add_argument('--log_sig', type=str, default='251211_145058')
+    args.add_argument('--load_epoch', type=int, default='500')
+    args.add_argument('--save_res', action='store_true')
+    args.add_argument('--nepochs', type=int, default=500)
+    args.add_argument('--save_freq', type=int, default=50)
     args.add_argument('--lr', type=float, default=1e-3)
+    args.add_argument('--gen_stop_early', action='store_true')
     args.add_argument('--gen_stop', type=float, default=200)
     args.add_argument('--gen_enable', action='store_true')
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--ldr_pretrained', action='store_true')
+    args.add_argument('--gen_pretrained', action='store_true')
     args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
     args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
     args.add_argument('--eps', type=float, default=0.5)
@@ -90,6 +94,9 @@ if __name__ == '__main__':
     if args.ldr_pretrained:
         model_load_ldr = torch.load(f'./logs/exp_{args.ldr_pretrained_log_sig}_RTNH/models/epoch{args.ldr_pretrained_epoch}.pth')
         dect_net.load_state_dict(state_dict=model_load_ldr['dect_state_dict'])
+    
+        if args.gen_pretrained:
+            gen_net.load_state_dict(state_dict=model_load_ldr['gen_state_dict'])
 
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
     scaler = GradScaler()
@@ -114,15 +121,20 @@ if __name__ == '__main__':
 
         # model_load_ldr = torch.load(f'./logs/exp_251119_133450_RTNH/models/epoch30.pth')
         dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
+        dect_net.eval()
+        dect_net.model_cfg.POST_PROCESSING = cfg.MODEL.POST_PROCESSING
+        dect_net.roi_head.model_cfg.NMS_CONFIG = cfg.MODEL.ROI_HEAD.NMS_CONFIG
+        print(f'dect_net.training: {dect_net.training}')
+        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, save_res=args.save_res)
 
     else:
         for ei in range(n_epochs):
+            rand_eps_ei = 1 #np.tanh(1e-4 * (ei - 0.5)**2) if ei%40 ==0 else rand_eps_ei #1-np.exp(-ei/10) 
             if args.gen_enable:
                 running_loss_gen = 0
                 gen_net.train()
 
-                if ei >=args.gen_stop:
+                if args.gen_stop_early and ei >=args.gen_stop:
                     gen_net.eval()
 
             running_loss_dect = 0
@@ -225,43 +237,39 @@ if __name__ == '__main__':
                     _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
                     if model_cfg == 'ldr':
-                        if random.random() < rand_eps:
+                        if random.random() < rand_eps_ei:
                             if _attrs.shape[0] < Nvoxels:
                                 batch_dict['voxels'] = _attrs.contiguous().float().to(d)
-                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
-                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
-                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
+                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
+                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
                                 batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
                                 batch_dict['voxel_num_points'] = voxel_num_points
                             else:
                                 _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
                                 batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
-                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
-                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
+                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
+                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
                                 batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
                                 batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     
                     else:
                         if _attrs.shape[0] < Nvoxels:
                             batch_dict['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
-                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)
-                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)
-                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)
+                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
+                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
+                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
                             batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
                             # batch_dict['voxel_num_points'] = voxel_num_points
                         else:
                             _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
                             batch_dict['sp_features'] = _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
-                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 0].int().clamp(1, z_size-1)[topN]
-                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 1].int().clamp(1, y_size-1)[topN]
-                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 2].int().clamp(1, x_size-1)[topN]
+                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
+                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
+                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
                             batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
                             # batch_dict['voxel_num_points'] = voxel_num_points[topN]
-                        
-                        # voxel_features = simplified_pointnet(batch_dict['sp_features'])
-                        # voxel_features = torch.max(voxel_features, dim=1, keepdim=False)[0]
-                        # batch_dict['_sp_features'] = voxel_features
                         
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
@@ -272,41 +280,14 @@ if __name__ == '__main__':
                 
                 # loss = loss_dect + loss_gen
                 if args.gen_enable:
-                    if ei < args.gen_stop:
+                    if not args.gen_stop_early or ei < args.gen_stop:
                         loss_gen.backward()
                         gen_opt.step()
-
-                        # for name, param in gen_net.named_parameters():
-                        #     if param.grad is not None:
-                        #         print('gen_net: ', name, param.grad.mean(), param.grad.abs().max())
-                        #     else:
-                        #         print(name, "has no grad!")
-                        
-                        # with torch.no_grad():
-                        #     for name, p in gen_net.named_parameters():
-                        #         if p.grad is None:
-                        #             continue
-
-                        #         grad_norm = p.grad.norm().item()
-                        #         weight_norm = p.data.norm().item()
-                        #         # assume Adam/AdamW or SGD; use your lr here
-                        #         lr = gen_opt.param_groups[0]['lr']
-
-                        #         rel_update = lr * grad_norm / (weight_norm + 1e-12)
-                        #         print(f"gen_net: {name:30s} grad_norm={grad_norm:.3e}  "
-                        #             f"w_norm={weight_norm:.3e}  "
-                        #             f"rel_update={rel_update:.3e}")
 
                     running_loss_gen += loss_gen.detach().item()
 
                 loss_dect.backward()
                 dect_opt.step()
-                # for name, param in gen_net.named_parameters():
-                #     if param.grad is not None:
-                #         print('gen_net: ', name, param.grad.mean(), param.grad.abs().max())
-                #     else:
-                #         print(name, "has no grad!")
-                # scaler.update()
                 running_loss_dect += loss_dect.detach().item()
                 
 
@@ -325,7 +306,7 @@ if __name__ == '__main__':
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
                 loss_dect_curve.append(running_loss_dect/(max(1, len(train_dataloader))))
-                if (ei < args.gen_stop and (ei+1) % save_freq == 0) or (ei >=args.gen_stop and (ei+1) % save_freq == 0):
+                if (ei+1) % save_freq == 0:
                     dict_util = {
                         'epoch': ei+1,
                         'gen_state_dict': gen_net.state_dict(),
@@ -352,8 +333,9 @@ if __name__ == '__main__':
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))
             
             if ei%2 == 0:
+                
                 if args.gen_enable:
-                    print(f'epoch:{ei}, loss_gen:{loss_gen_curve[-1]}, loss_dect:{loss_dect_curve[-1]}')
+                    print(f'epoch:{ei}, rand_eps_ei:{rand_eps_ei}, loss_gen:{loss_gen_curve[-1]}, loss_dect:{loss_dect_curve[-1]}')
                 else:
                     print(f'epoch:{ei}, loss_dect:{loss_dect_curve[-1]}')
 
