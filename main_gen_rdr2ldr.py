@@ -12,6 +12,9 @@ from spconv.pytorch import SparseConvTensor, SubMConv3d, SparseConv3d, SparseInv
 import argparse
 import random
 import pickle
+import torch
+import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
@@ -30,7 +33,7 @@ def arg_parser():
     args.add_argument('--log_sig', type=str, default='251211_145058')
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
-    args.add_argument('--nepochs', type=int, default=500)
+    args.add_argument('--nepochs', type=int, default=200)
     args.add_argument('--save_freq', type=int, default=50)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--gen_stop_early', action='store_true')
@@ -42,6 +45,8 @@ def arg_parser():
     args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
     args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
     args.add_argument('--eps', type=float, default=0.5)
+    args.add_argument('--gt_topk', default=10, type=int)
+    args.add_argument('--set', default='train', type=str)
     return args.parse_args()
 
 
@@ -84,7 +89,7 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
-        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0)
+        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         gen_opt = optim.SGD(gen_net.parameters(), lr=1e-2)
     else:
         gen_net = None
@@ -105,6 +110,7 @@ if __name__ == '__main__':
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')
     os.makedirs(save_model_path, exist_ok=True)
+    scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
 
     n_epochs = args.nepochs
     save_freq = args.save_freq
@@ -125,7 +131,8 @@ if __name__ == '__main__':
         dect_net.model_cfg.POST_PROCESSING = cfg.MODEL.POST_PROCESSING
         dect_net.roi_head.model_cfg.NMS_CONFIG = cfg.MODEL.ROI_HEAD.NMS_CONFIG
         print(f'dect_net.training: {dect_net.training}')
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, save_res=args.save_res)
+        dl = test_dataloader if args.set == 'test' else train_dataloader
+        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res)
 
     else:
         for ei in range(n_epochs):
@@ -207,14 +214,14 @@ if __name__ == '__main__':
                     union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
                     # print(f'Here1 {union_st.features.shape[0]}, {union_st.indices.shape[0]}')
                     
-                    out = gen_net(union_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
+                    out = gen_net(radar_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
 
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    loss_gen = gen_loss(occ, attrs, pred, union_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
+                    loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
                     offs = attrs[:, :, :3]
                     # print(f'offs: {offs}, ints: {ints}')
 
-                    voxel_center_xyz = origin + (torch.flip(union_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+                    voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
                     pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
                     voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                     # print(voxel_center_xyz.shape, pred_offset_m.shape)
@@ -226,7 +233,7 @@ if __name__ == '__main__':
                         print(f'_attrs has nan')
 
                     # select valid slots by probability
-                    prob_thresh=0.9
+                    prob_thresh=0.0
                     probs = torch.sigmoid(occ)                 # [N,K,1]
                     keep = (probs >= prob_thresh)
                     voxel_num_points = keep.sum(dim=1) #[N, ]
@@ -303,6 +310,8 @@ if __name__ == '__main__':
                 for temp_key in batch_dict.keys():
                     batch_dict[temp_key] = None
 
+            scheduler.step()
+
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
                 loss_dect_curve.append(running_loss_dect/(max(1, len(train_dataloader))))
@@ -313,7 +322,9 @@ if __name__ == '__main__':
                         'dect_state_dict': dect_net.state_dict(),
                         'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
-                        'lr': args.lr
+                        'lr': scheduler.get_last_lr(),
+                        'loss_gen': loss_gen.detach().item(),
+                        'loss_dect': loss_dect.detach().item()
                     }
 
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))
@@ -327,7 +338,8 @@ if __name__ == '__main__':
                         'dect_state_dict': dect_net.state_dict(),
                         # 'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
-                        'lr': args.lr
+                        'lr': args.lr,
+                        'loss_dect': loss_dect.detach().item()
                     }
 
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))

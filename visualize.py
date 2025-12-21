@@ -23,6 +23,7 @@ def arg_parser():
     args.add_argument('--set', type=str, default='test')
     args.add_argument('--thresh', type=float, default=0.9)
     args.add_argument('--model_cfg', type=str, default='ldr')
+    args.add_argument('--gt_topk', default=10, type=int)
     return args.parse_args()
 
 def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
@@ -192,7 +193,7 @@ if __name__ == '__main__':
         all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
 
-        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st) #gt_d: zyx
+        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) #gt_d: zyx
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}')
 
@@ -214,7 +215,7 @@ if __name__ == '__main__':
             print(f'_attrs has nan')
         
         # select valid slots by probability
-        prob_thresh=0.9
+        prob_thresh=0.99
         probs = torch.sigmoid(occ)                 # [N,K,1]
         keep = (probs > prob_thresh)
         voxel_num_points = keep.sum(dim=1) #[N, ]
@@ -236,7 +237,7 @@ if __name__ == '__main__':
         voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         offset_m_gt = gt_d * vsize_xyz.to(d)  # scale voxel-units → meters
         voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 5, 1)
-        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 10, 1, 1)
+        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, args.gt_topk, 1, 1)
         voxel_center_xyz_gt = voxel_center_xyz_gt.reshape(-1, 5, voxel_center_xyz_gt.shape[-1])
         offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
@@ -293,10 +294,10 @@ if __name__ == '__main__':
         print(f'points_xyz: {intensity.mean()},\
                rdr_points_xyz: {rdr_intensities.mean()}, ldr_points_xyz: {ldr_intensities.mean()}')
         
-        randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
-        _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
-        save_open3d_render_fixed_pose(points_xyz=points_xyz[10000:], 
-                                      intensities=intensity[10000:], 
+        # randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
+        # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
+        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+                                      intensities=intensity, 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
                                       pose=pose)

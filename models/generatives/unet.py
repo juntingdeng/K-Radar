@@ -230,7 +230,7 @@ def local_match(radar: SparseConvTensor, lidar: SparseConvTensor, R=1):
 import torch
 from spconv.pytorch import SparseConvTensor
 
-def local_match_closest(radar: SparseConvTensor, lidar: SparseConvTensor):
+def local_match_closest(radar: SparseConvTensor, lidar: SparseConvTensor, gt_topk):
     """
     For each radar voxel, find the closest LiDAR voxel (in voxel index space)
     within the same batch and use it as ground truth.
@@ -248,7 +248,7 @@ def local_match_closest(radar: SparseConvTensor, lidar: SparseConvTensor):
     Nr = r_idx.size(0)
     C_lidar = lidar.features.size(1)
 
-    topk=10
+    topk=gt_topk
     # outputs
     matched_mask = torch.zeros(Nr, dtype=torch.bool, device=device)
     gt_offsets = torch.zeros((Nr, topk, 3), dtype=radar.features.dtype, device=device)
@@ -301,10 +301,11 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 class SynthLocalLoss(nn.Module):
-    def __init__(self, w_occ=0.2, w_off=1.0, w_feat=1.0):
+    def __init__(self, w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=10):
         super().__init__()
         self.w_occ, self.w_off, self.w_feat = w_occ, w_off, w_feat
         self.bce = nn.BCEWithLogitsLoss()
+        self.gt_topk = gt_topk
 
     def forward(self, logits, attrs, pred_st: SparseConvTensor,
                 radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
@@ -313,10 +314,10 @@ class SynthLocalLoss(nn.Module):
 
         # logits: [N, K, 1]
         # attrs: [N, K, 4], dx,dy,dz,i
-        logits = logits.unsqueeze(1).repeat(1, 10, 1, 1).reshape(-1, logits.shape[-2], logits.shape[-1])
-        attrs = attrs.unsqueeze(1).repeat(1, 10, 1, 1).reshape(-1, attrs.shape[-2], attrs.shape[-1])
+        logits = logits.unsqueeze(1).repeat(1, self.gt_topk, 1, 1).reshape(-1, logits.shape[-2], logits.shape[-1])
+        attrs = attrs.unsqueeze(1).repeat(1, self.gt_topk, 1, 1).reshape(-1, attrs.shape[-2], attrs.shape[-1])
         Nr = attrs.size(0)
-        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st) #gt_d: zyx
+        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, self.gt_topk) #gt_d: zyx
         matched = matched.unsqueeze(1).repeat(1, 5)
         # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
         gt_d = torch.flip(gt_d, dims=[1]).unsqueeze(1).repeat(1, 5, 1) #gt_d: zyx -> xyz
@@ -337,10 +338,10 @@ class SynthLocalLoss(nn.Module):
             # feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
 
             offs = attrs[:, :, :3]
-            voxel_center_xyz = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+            voxel_center_xyz = origin + (torch.flip(pred_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
             pred_offset_m = offs * vsize_xyz.to('cuda')  # scale voxel-units → meters
             voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 10, 1, 1)
+            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, self.gt_topk, 1, 1)
             voxel_center_xyz = voxel_center_xyz.reshape(-1, 5, voxel_center_xyz.shape[-1])
             # print(voxel_center_xyz.shape, pred_offset_m.shape)
             attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)

@@ -325,7 +325,7 @@ class Validate:
                 all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
                 union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
 
-                out = self.gen_net(union_st) 
+                out = self.gen_net(radar_st) 
                 # print(f"/////////////indices shape: {rad_idx.shape}, {lid_idx.shape}, {union_st.indices.shape}, {out['st'].indices.shape}")
 
                 # pred, occ, attrs = out['st'], out['logits'], out['attrs']
@@ -333,7 +333,7 @@ class Validate:
                 pred, occ, attrs = out['st'], out['logits'],  out['attrs']
                 offs = attrs[:, :, :3]
 
-                voxel_center_xyz = self.origin + (torch.flip(out['st'].indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
+                voxel_center_xyz = self.origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
                 pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
                 voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
                 # print(voxel_center_xyz.shape, pred_offset_m.shape)
