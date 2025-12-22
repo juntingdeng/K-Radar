@@ -308,7 +308,7 @@ class SynthLocalLoss(nn.Module):
         self.gt_topk = gt_topk
 
     def forward(self, logits, attrs, pred_st: SparseConvTensor,
-                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
+                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, matched, gt_d, gt_f, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
         # pred_feat_st.features: [Nr, 4] = dx,dy,dz,i
         # pred_occ_st.features : [Nr, 1]
 

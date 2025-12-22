@@ -133,7 +133,8 @@ if __name__ == '__main__':
     ppl.set_validate()
 
     gen_net = gen_net.to(d)
-    for bi, batch_dict in enumerate(test_dataloader):
+    dl = test_dataloader if args.set == 'test' else train_dataloader
+    for bi, batch_dict in enumerate(dl):
         if bi > 3 : break
 
         batch_dict = rdr_processor.forward(batch_dict)
@@ -195,12 +196,12 @@ if __name__ == '__main__':
 
         matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) #gt_d: zyx
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
-        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}')
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
 
         out = gen_net(radar_st)
         pred, occ, attrs = out['st'], out['logits'], out['attrs']
         offs = attrs[:, :, :3]
-        # print(f'offs: {offs}, ints: {ints}')
+        print(f'offs: {offs.abs().mean().item()}, {offs.abs().median().item()}, {offs.abs().min().item()}, {offs.abs().max().item()}')
 
         voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
         pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
@@ -296,6 +297,7 @@ if __name__ == '__main__':
         
         # randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
         # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
+        plot_quiver(pts_pred=rdr_points_xyz, off_pred=pred_offset_m.detach().cpu().numpy().reshape(-1, 3), name=os.path.join(fig_path, f"{set}_{bi}_offset_quiver.png"))
         save_open3d_render_offsets(points_xyz=points_xyz, 
                                    points_gt=attrs_gt[:,:,:3].reshape(-1, 3), 
                                    points_rdr=rdr_points_xyz,

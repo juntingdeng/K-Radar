@@ -305,6 +305,48 @@ def save_open3d_render_offsets(points_xyz, points_gt, points_rdr, intensities, i
     plt.close(fig)
     return filename
 
+def plot_quiver(pts_pred, off_pred, name=''):
+
+    # BEV plane
+    x = pts_pred[:, 0]   # meters
+    y = pts_pred[:, 1]   # meters
+
+    dx_gt  = off_pred[:, 0]
+    dy_gt  = off_pred[:, 1]
+
+    # downsample
+    step = 10
+    idx = np.arange(0, len(x), step)
+
+    plt.figure(figsize=(6, 6))
+
+    # background points
+    # plt.scatter(x[idx], y[idx], s=3, c="gray", alpha=0.3)
+
+    # arrow scale (meters → display)
+    arrow_scale = 10.0   # ↑ larger → shorter arrows
+
+    # pred → gt
+    plt.quiver(
+        x[idx], y[idx],
+        dx_gt[idx], dy_gt[idx],
+        angles="xy",
+        scale_units="xy",
+        scale=arrow_scale,
+        color="blue",
+        width=0.002,
+        label="pred → gt"
+    )
+
+
+    plt.axis("equal")
+    plt.xlabel("X (m)")
+    plt.ylabel("Y (m)")
+    plt.title("Offset vectors in BEV (meters)")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(name)
+
 
 def save_triplet_views(pred_xyz, radar_xyz, lidar_xyz,
                        pred_I=None, radar_I=None, lidar_I=None,

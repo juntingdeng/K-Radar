@@ -33,7 +33,7 @@ def arg_parser():
     args.add_argument('--log_sig', type=str, default='251211_145058')
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
-    args.add_argument('--nepochs', type=int, default=200)
+    args.add_argument('--nepochs', type=int, default=300)
     args.add_argument('--save_freq', type=int, default=50)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--dect_start_late', action='store_true')
@@ -221,15 +221,15 @@ if __name__ == '__main__':
 
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
-                    if args.gen_enable:
-                        if not args.gen_stop_early or ei < args.gen_stop:
-                            loss_gen.backward()
-                            gen_opt.step()
+                    # if args.gen_enable:
+                    #     if not args.gen_stop_early or ei < args.gen_stop:
+                    #         loss_gen.backward()
+                    #         gen_opt.step()
 
-                        running_loss_gen += loss_gen.detach().item()
+                    #     running_loss_gen += loss_gen.detach().item()
 
-                    out = gen_net(radar_st)
-                    pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                    # out = gen_net(radar_st)
+                    # pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     offs = attrs[:, :, :3]
                     # print(f'offs: {offs}, ints: {ints}')
 
@@ -239,8 +239,8 @@ if __name__ == '__main__':
                     # print(voxel_center_xyz.shape, pred_offset_m.shape)
                     attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
-                    _pred_indices = pred.indices.detach()
-                    _attrs = attrs.detach() # xyz
+                    _pred_indices = pred.indices#.detach()
+                    _attrs = attrs#.detach() # xyz
                     if (torch.isnan(_attrs)).any():
                         print(f'_attrs has nan')
 
@@ -297,12 +297,18 @@ if __name__ == '__main__':
                     
                     dect_output = dect_net(batch_dict)
                     loss_dect = dect_net.head.loss(dect_output) if args.model_cfg == 'rdr' else dect_net.loss(dect_output)
-                    loss_dect.backward()
-                    dect_opt.step()
+                    # loss_dect.backward()
+                    # dect_opt.step()
                     running_loss_dect += loss_dect.detach().item()
+
+                    loss_total = loss_gen + loss_dect
                 else:
                     loss_dect = torch.tensor(0.)
+                    loss_total = loss_gen
                 
+                loss_total.backward()
+                dect_opt.step()
+                gen_opt.step()
 
                 # for key, val in batch_dict.items():
                 #     if isinstance(val, torch.Tensor):
@@ -353,9 +359,9 @@ if __name__ == '__main__':
             if ei%2 == 0:
                 
                 if args.gen_enable:
-                    print(f'epoch:{ei}, rand_eps_ei:{rand_eps_ei}, loss_gen:{loss_gen_curve[-1]}, loss_dect:{loss_dect_curve[-1]}')
+                    print(f'epoch:{ei}, rand_eps_ei:{rand_eps_ei}, loss_gen:{loss_gen.detach().item():.4f}, loss_dect:{loss_dect.detach().item():.4f}, loss_total:{loss_total.detach().item():.4f}')
                 else:
-                    print(f'epoch:{ei}, loss_dect:{loss_dect_curve[-1]}')
+                    print(f'epoch:{ei}, loss_dect:{loss_dect.detach().item():.4f}')
 
 
         ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
