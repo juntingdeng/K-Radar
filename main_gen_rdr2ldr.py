@@ -36,6 +36,9 @@ def arg_parser():
     args.add_argument('--nepochs', type=int, default=200)
     args.add_argument('--save_freq', type=int, default=50)
     args.add_argument('--lr', type=float, default=1e-3)
+    args.add_argument('--dect_start_late', action='store_true')
+    args.add_argument('--dect_start', type=int, default=80)
+
     args.add_argument('--gen_stop_early', action='store_true')
     args.add_argument('--gen_stop', type=float, default=200)
     args.add_argument('--gen_enable', action='store_true')
@@ -45,7 +48,7 @@ def arg_parser():
     args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
     args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
     args.add_argument('--eps', type=float, default=0.5)
-    args.add_argument('--gt_topk', default=10, type=int)
+    args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--set', default='train', type=str)
     return args.parse_args()
 
@@ -103,7 +106,7 @@ if __name__ == '__main__':
         if args.gen_pretrained:
             gen_net.load_state_dict(state_dict=model_load_ldr['gen_state_dict'])
 
-    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0.)
+    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg)
     ppl.set_validate()
@@ -218,6 +221,15 @@ if __name__ == '__main__':
 
                     pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
+                    if args.gen_enable:
+                        if not args.gen_stop_early or ei < args.gen_stop:
+                            loss_gen.backward()
+                            gen_opt.step()
+
+                        running_loss_gen += loss_gen.detach().item()
+
+                    out = gen_net(radar_st)
+                    pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     offs = attrs[:, :, :3]
                     # print(f'offs: {offs}, ints: {ints}')
 
@@ -281,21 +293,15 @@ if __name__ == '__main__':
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
                 # print(f"batch_dict['voxels']: {batch_dict['voxels'].shape}, batch_dict['voxel_coords']: {batch_dict['voxel_coords'].shape}")
-                dect_output = dect_net(batch_dict)
-                
-                loss_dect = dect_net.head.loss(dect_output) if args.model_cfg == 'rdr' else dect_net.loss(dect_output)
-                
-                # loss = loss_dect + loss_gen
-                if args.gen_enable:
-                    if not args.gen_stop_early or ei < args.gen_stop:
-                        loss_gen.backward()
-                        gen_opt.step()
-
-                    running_loss_gen += loss_gen.detach().item()
-
-                loss_dect.backward()
-                dect_opt.step()
-                running_loss_dect += loss_dect.detach().item()
+                if not args.dect_start_late or (args.dect_start_late and ei >= args.dect_start):
+                    
+                    dect_output = dect_net(batch_dict)
+                    loss_dect = dect_net.head.loss(dect_output) if args.model_cfg == 'rdr' else dect_net.loss(dect_output)
+                    loss_dect.backward()
+                    dect_opt.step()
+                    running_loss_dect += loss_dect.detach().item()
+                else:
+                    loss_dect = torch.tensor(0.)
                 
 
                 # for key, val in batch_dict.items():

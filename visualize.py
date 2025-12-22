@@ -18,12 +18,12 @@ from models.generatives.unet_utlis import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
-    args.add_argument('--log_sig', type=str, default='251128_154223')
-    args.add_argument('--load_epoch', type=str, default='20')
+    args.add_argument('--log_sig', type=str, default='251218_214707')
+    args.add_argument('--load_epoch', type=str, default='150')
     args.add_argument('--set', type=str, default='test')
     args.add_argument('--thresh', type=float, default=0.9)
     args.add_argument('--model_cfg', type=str, default='ldr')
-    args.add_argument('--gt_topk', default=10, type=int)
+    args.add_argument('--gt_topk', default=100, type=int)
     return args.parse_args()
 
 def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
@@ -197,7 +197,7 @@ if __name__ == '__main__':
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}')
 
-        out = gen_net(union_st)
+        out = gen_net(radar_st)
         pred, occ, attrs = out['st'], out['logits'], out['attrs']
         offs = attrs[:, :, :3]
         # print(f'offs: {offs}, ints: {ints}')
@@ -206,8 +206,8 @@ if __name__ == '__main__':
         pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
         voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
         # print(voxel_center_xyz.shape, pred_offset_m.shape)
-        print(f'pred_offset_m:{pred_offset_m}, voxel_center_xyz:{voxel_center_xyz}')
-        attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
+        print(f'pred_offset_m:{pred_offset_m.shape}, {type(pred_offset_m)}, voxel_center_xyz:{voxel_center_xyz}')
+        attrs = torch.cat([voxel_center_xyz+pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
         _pred_indices = pred.indices.detach()
         _attrs = attrs.detach() # xyz
@@ -215,7 +215,7 @@ if __name__ == '__main__':
             print(f'_attrs has nan')
         
         # select valid slots by probability
-        prob_thresh=0.99
+        prob_thresh=0.9
         probs = torch.sigmoid(occ)                 # [N,K,1]
         keep = (probs > prob_thresh)
         voxel_num_points = keep.sum(dim=1) #[N, ]
@@ -242,7 +242,7 @@ if __name__ == '__main__':
         offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
-        attrs_gt = torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
+        attrs_gt = gt_f.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
         points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
         intensity_gt = attrs_gt[:,:, -1].reshape(-1)
@@ -296,31 +296,40 @@ if __name__ == '__main__':
         
         # randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
         # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
+        save_open3d_render_offsets(points_xyz=points_xyz, 
+                                   points_gt=attrs_gt[:,:,:3].reshape(-1, 3), 
+                                   points_rdr=rdr_points_xyz,
+                                      intensities=intensity,
+                                      intensities_gt=intensity_gt, 
+                                      intensities_rdr=rdr_intensities,
+                                      boxes=gt_boxes,
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_offset.png"), 
+                                      pose=pose)
         save_open3d_render_fixed_pose(points_xyz=points_xyz, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"pred1_{set}_{bi}.png"), 
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_pred1.png"), 
                                       pose=pose)
         save_open3d_render_fixed_pose(points_xyz=pred_xyz, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"pred2_{set}_{bi}.png"), 
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_pred2.png"), 
                                       pose=pose)
         save_open3d_render_fixed_pose(rdr_points_xyz, 
                                       intensities=rdr_intensities, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"rdr_{set}_{bi}.png"),   
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_rdr.png"),   
                                       pose=pose)
         save_open3d_render_fixed_pose(ldr_points_xyz, 
                                       intensities=ldr_intensities, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"ldr_{set}_{bi}.png"),  
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_ldr.png"),  
                                       pose=pose)
         
         save_open3d_render_fixed_pose(points_xyz=attrs_gt[:,:,:3].reshape(-1, 3), 
                                       intensities=intensity_gt, 
                                       boxes=gt_boxes,
-                                      filename=os.path.join(fig_path, f"gt_{set}_{bi}.png"), 
+                                      filename=os.path.join(fig_path, f"{set}_{bi}_gt.png"), 
                                       pose=pose)
 
 
@@ -337,7 +346,7 @@ if __name__ == '__main__':
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(os.path.join(fig_path, f"error_rdr{bi}.png"))
+        plt.savefig(os.path.join(fig_path, f"{set}_{bi}_error_rdr.png"))
 
         plt.figure()
         plt.plot(bin_x, lidar_err, label="LiDAR error")
@@ -346,6 +355,6 @@ if __name__ == '__main__':
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(os.path.join(fig_path, f"error_ldr_{bi}.png"))
+        plt.savefig(os.path.join(fig_path, f"{set}_{bi}_error_ldr.png"))
 
         plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"error_cdf_{bi}.png"))

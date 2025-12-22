@@ -198,6 +198,113 @@ def save_open3d_render_fixed_pose(points_xyz, intensities=None, boxes=None, file
     plt.close(fig)
     return filename
 
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
+def apply_colormap(values, cmap_name="viridis", vmin=None, vmax=None):
+    values = np.asarray(values)
+    if vmin is None: vmin = np.nanmin(values)
+    if vmax is None: vmax = np.nanmax(values)
+
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax, clip=True)
+    cmap = cm.get_cmap(cmap_name)
+
+    colors = cmap(norm(values))[:, :3]  # drop alpha
+    return colors
+
+def save_open3d_render_offsets(points_xyz, points_gt, points_rdr, intensities, intensities_gt, intensities_rdr, boxes=None, filename="view.png",
+                                  pose=None, width=1600, height=900,
+                                  fov_deg=60.0, near=0.1, far=5000.0,
+                                  bg=(1,1,1,1), point_size=1.5):
+    X = to_numpy(points_xyz, shape_last=3, dtype=np.float64) # [N, 3]
+    N = X.shape[0]
+    C = _colors_from_intensity(intensities, N) # [N, ]
+
+    Xgt = to_numpy(points_gt, shape_last=3, dtype=np.float64) # [N, 3]
+    Cgt = _colors_from_intensity(intensities_gt, N) # [N, ]
+
+    Xrdr = to_numpy(points_rdr, shape_last=3, dtype=np.float64) # [N, 3]
+    Crdr = _colors_from_intensity(intensities_rdr, N) # [N, ]
+
+    if _HAS_O3D:
+        rnd = o3d.visualization.rendering.OffscreenRenderer(width, height)
+        rnd.scene.set_background(bg)
+
+        pcd_gt = o3d.geometry.PointCloud()
+        pcd_gt.points = o3d.utility.Vector3dVector(np.ascontiguousarray(Xgt.copy()))
+        pcd_gt.colors = o3d.utility.Vector3dVector(apply_colormap(intensities_gt, cmap_name="viridis"))
+
+        pcd_pred = o3d.geometry.PointCloud()
+        pcd_pred.points = o3d.utility.Vector3dVector(np.ascontiguousarray(X.copy()))
+        pcd_pred.colors = o3d.utility.Vector3dVector(apply_colormap(intensities, cmap_name="plasma"))
+                                                     
+        pcd_rdr = o3d.geometry.PointCloud()
+        pcd_rdr.points = o3d.utility.Vector3dVector(np.ascontiguousarray(Xrdr.copy()))
+        pcd_rdr.colors = o3d.utility.Vector3dVector(apply_colormap(intensities_rdr, cmap_name="coolwarm"))
+
+        mat_gt = o3d.visualization.rendering.MaterialRecord()
+        mat_gt.shader = "defaultUnlit"
+        mat_gt.point_size = 1.5
+
+        mat_pred = o3d.visualization.rendering.MaterialRecord()
+        mat_pred.shader = "defaultUnlit"
+        mat_pred.point_size = 2.5
+
+        mat_rdr = o3d.visualization.rendering.MaterialRecord()
+        mat_rdr.shader = "defaultUnlit"
+        mat_rdr.point_size = 3.5
+
+        rnd.scene.add_geometry("gt", pcd_gt, mat_gt)
+        rnd.scene.add_geometry("pred", pcd_pred, mat_pred)
+        rnd.scene.add_geometry("rdr", pcd_rdr, mat_rdr)
+
+        # ---- Bounding Boxes ----
+        for i, box_vals in enumerate(boxes):
+            cls_name, (x, y, z, th, l, w, h), trk, avail = box_vals
+            box_obj = make_o3d_box(x, y, z, th, l, w, h)
+
+            mat_box = o3d.visualization.rendering.MaterialRecord()
+            mat_box.shader = "unlitLine"
+            mat_box.line_width = 3.0
+
+            rnd.scene.add_geometry(f"box_{i}", box_obj, mat_box)
+
+        if pose is None:
+            pose = compute_reference_pose(Xgt, view="bev")
+        cam = rnd.scene.camera
+        cam.look_at(pose["ctr"], pose["eye"], pose["up"])
+        cam.set_projection(
+            float(fov_deg),
+            float(width)/float(height),
+            float(near),
+            float(far),
+            o3d.visualization.rendering.Camera.FovType.Vertical
+        )
+
+        img = rnd.render_to_image()
+        o3d.io.write_image(filename, img)
+        return filename
+
+    # Fallback to matplotlib BEV
+    if not _HAS_MPL:
+        raise RuntimeError("Neither Open3D nor matplotlib available for rendering.")
+    x, y = X[:,0], X[:,1]
+    xr = (x.min(), x.max()); yr = (y.min(), y.max())
+    W = 1200; H = 800
+    fig, ax = plt.subplots(figsize=(W/100, H/100), dpi=100)
+    ax.set_facecolor((1,1,1))
+    # ax.scatter(x, y, s=1, c=C, marker=".", cmap="viridis")
+
+    xgt, ygt = Xgt[:,0], Xgt[:,1]
+    ax.scatter(xgt, ygt, s=1, c=Cgt, marker=".", cmap="coolwarm")
+
+    ax.set_aspect("equal")
+    ax.set_xlim(*xr); ax.set_ylim(*yr)
+    ax.axis("off")
+    fig.tight_layout(pad=0)
+    fig.savefig(filename, dpi=150, bbox_inches="tight", pad_inches=0)
+    plt.close(fig)
+    return filename
+
 
 def save_triplet_views(pred_xyz, radar_xyz, lidar_xyz,
                        pred_I=None, radar_I=None, lidar_I=None,
