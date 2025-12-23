@@ -302,13 +302,15 @@ if __name__ == '__main__':
                     running_loss_dect += loss_dect.detach().item()
 
                     loss_total = loss_gen + loss_dect
+
+                    loss_total.backward()
+                    dect_opt.step()
+                    gen_opt.step()
                 else:
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen
-                
-                loss_total.backward()
-                dect_opt.step()
-                gen_opt.step()
+                    loss_total.backward()
+                    gen_opt.step()
 
                 # for key, val in batch_dict.items():
                 #     if isinstance(val, torch.Tensor):

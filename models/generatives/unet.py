@@ -308,7 +308,7 @@ class SynthLocalLoss(nn.Module):
         self.gt_topk = gt_topk
 
     def forward(self, logits, attrs, pred_st: SparseConvTensor,
-                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, matched, gt_d, gt_f, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
+                radar_st: SparseConvTensor, lidar_st: SparseConvTensor, R=1, origin=[0,0,0], vsize_xyz=[0,0,0]):
         # pred_feat_st.features: [Nr, 4] = dx,dy,dz,i
         # pred_occ_st.features : [Nr, 1]
 
@@ -334,7 +334,12 @@ class SynthLocalLoss(nn.Module):
             pred_d = attrs[matched][:, :3] # xyz
             pred_i = attrs[matched][:, 3: 4]
             # print(f'pred_d: {pred_d.shape}, gt_d[matched]: {gt_d[matched].shape}')
-            off_loss = F.smooth_l1_loss(pred_d, gt_d[matched])
+
+            pred_mag = pred_d.norm(dim=-1)   # (N,)
+            gt_mag   = gt_d[matched].norm(dim=-1)
+            alpha = 0.9   # encourage pred >= 90% of gt (tune 0.7~1.0)
+            loss_under = torch.relu(alpha * gt_mag - pred_mag).mean()
+            off_loss = F.smooth_l1_loss(pred_d, gt_d[matched]) + 0.05*loss_under
             # feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
 
             offs = attrs[:, :, :3]
