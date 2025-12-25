@@ -34,7 +34,7 @@ def arg_parser():
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
     args.add_argument('--nepochs', type=int, default=300)
-    args.add_argument('--save_freq', type=int, default=50)
+    args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--dect_start_late', action='store_true')
     args.add_argument('--dect_start', type=int, default=80)
@@ -93,7 +93,7 @@ if __name__ == '__main__':
     if args.gen_enable:
         gen_net = SparseUNet3D(in_ch=20).to(d)
         gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
-        gen_opt = optim.SGD(gen_net.parameters(), lr=1e-2)
+        gen_opt = optim.SGD(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
 
@@ -134,6 +134,7 @@ if __name__ == '__main__':
         dect_net.model_cfg.POST_PROCESSING = cfg.MODEL.POST_PROCESSING
         dect_net.roi_head.model_cfg.NMS_CONFIG = cfg.MODEL.ROI_HEAD.NMS_CONFIG
         print(f'dect_net.training: {dect_net.training}')
+        print(f"/////dect_loss: {model_load['loss_dect']}")
         dl = test_dataloader if args.set == 'test' else train_dataloader
         ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res)
 
@@ -300,16 +301,19 @@ if __name__ == '__main__':
                     # loss_dect.backward()
                     # dect_opt.step()
                     running_loss_dect += loss_dect.detach().item()
-
+                    # loss_total = loss_gen + 0.5 * (1.0 - np.cos(np.pi * (ei/n_epochs)))*loss_dect
+                    
                     loss_total = loss_gen + loss_dect
-
                     loss_total.backward()
+                    # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
+                    # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
                     dect_opt.step()
                     gen_opt.step()
                 else:
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen
                     loss_total.backward()
+                    # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
                     gen_opt.step()
 
                 # for key, val in batch_dict.items():

@@ -345,7 +345,7 @@ class Validate:
                     print(f'_attrs has nan')
 
                 # select valid slots by probability
-                prob_thresh=0.9
+                prob_thresh=0.0
                 probs = torch.sigmoid(occ)                 # [N,K,1]
                 keep = (probs >= prob_thresh)
                 voxel_num_points = keep.sum(dim=1) #[N, ]

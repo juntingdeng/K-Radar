@@ -359,4 +359,4 @@ if __name__ == '__main__':
         plt.tight_layout()
         plt.savefig(os.path.join(fig_path, f"{set}_{bi}_error_ldr.png"))
 
-        plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"error_cdf_{bi}.png"))
+        plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"{set}_{bi}_error_cdf.png"))
