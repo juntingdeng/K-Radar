@@ -64,25 +64,10 @@ class SparseUNet3D(nn.Module):
         self.pred_head = spconv.SparseSequential(
             SubMConv3d(base_ch, K*(F+1), kernel_size=1, bias=True, indice_key="head_feat")  # dx,dy,dz,i
         )
-        # self.occ_head  = spconv.SparseSequential(
-        #     SubMConv3d(base_ch, K, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
-        # )
-        # self.ints_head  = spconv.SparseSequential(
-        #     SubMConv3d(base_ch, K, kernel_size=1, bias=True, indice_key="head_occ")   # p (logit)
-        # )
 
         self.occ_act = nn.Sigmoid()
         self.ints_act = nn.ReLU()
 
-    # @staticmethod
-    # def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
-    #     # Ensure coordinates/shape align before concatenation
-    #     if not (a.indices.shape == b.indices.shape and torch.equal(a.indices, b.indices)):
-    #         raise RuntimeError("Skip connection coords mismatch; check indice_key/stride path.")
-    #     feats = torch.cat([a.features, b.features], dim=1)
-    #     return SparseConvTensor(
-    #         feats, a.indices, a.spatial_shape, a.batch_size, grid=a.grid
-    #     )
     @staticmethod
     def _cat_if_same_coords(a: SparseConvTensor, b: SparseConvTensor):
         if not (a.indices.shape == b.indices.shape and torch.equal(a.indices, b.indices)):
@@ -119,11 +104,7 @@ class SparseUNet3D(nn.Module):
         c0 = self._cat_if_same_coords(u0, e0)
         c0 = self.dec0(c0)
 
-        # occ = self.occ_head(c0)           # logits per active voxel
         pred = self.pred_head(c0)
-        # ints = self.ints_head(c0)
-        # occ = occ.replace_feature(self.occ_act(occ.features))
-        # ints = ints.replace_feature(self.ints_act(ints.features))
 
         N = pred.features.size(0)
         C = self.out_ch
@@ -318,6 +299,7 @@ class SynthLocalLoss(nn.Module):
         attrs = attrs.unsqueeze(1).repeat(1, self.gt_topk, 1, 1).reshape(-1, attrs.shape[-2], attrs.shape[-1])
         Nr = attrs.size(0)
         matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, self.gt_topk) #gt_d: zyx
+
         matched = matched.unsqueeze(1).repeat(1, 5)
         # print(f'matched:{matched.shape}, gt_d:{gt_d.shape}, gt_f:{gt_f.shape}, attrs:{attrs.shape}')
         gt_d = torch.flip(gt_d, dims=[1]).unsqueeze(1).repeat(1, 5, 1) #gt_d: zyx -> xyz
@@ -335,10 +317,6 @@ class SynthLocalLoss(nn.Module):
             pred_i = attrs[matched][:, 3: 4]
             # print(f'pred_d: {pred_d.shape}, gt_d[matched]: {gt_d[matched].shape}')
 
-            # pred_mag = pred_d.norm(dim=-1)   # (N,)
-            # gt_mag   = gt_d[matched].norm(dim=-1)
-            # alpha = 0.9   # encourage pred >= 90% of gt (tune 0.7~1.0)
-            # loss_under = torch.relu(alpha * gt_mag - pred_mag).mean()
             off_loss = F.smooth_l1_loss(pred_d, gt_d[matched]) #+ 0.05*loss_under
             # feat_loss = F.l1_loss(pred_i, gt_f[matched][:, 3:4])  # if your LiDAR feat is intensity in channel 0
 

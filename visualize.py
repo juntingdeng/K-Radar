@@ -15,6 +15,7 @@ from torch.amp import GradScaler
 from pipelines.pipeline_dect import Validate
 from visualize_unet_points import *
 from models.generatives.unet_utlis import *
+from models.generatives.generative import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
@@ -24,6 +25,7 @@ def arg_parser():
     args.add_argument('--thresh', type=float, default=0.9)
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--gt_topk', default=100, type=int)
+    args.add_argument('--mdn', action='store_true')
     return args.parse_args()
 
 def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
@@ -123,7 +125,7 @@ if __name__ == '__main__':
     ldr_processor = LdrPreprocessor(cfg)
 
     Nvoxels = cfg.DATASET.max_num_voxels
-    gen_net = SparseUNet3D(in_ch=20)
+    gen_net = SparseUNet3D(in_ch=20) if not args.mdn else SparseUNet3D_MDN(in_ch=20)
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg) if args.model_cfg == 'ldr' else RadarBase(cfg=cfg)
     model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{load_epoch}.pth')
     gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
@@ -194,53 +196,79 @@ if __name__ == '__main__':
         all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
 
-        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) #gt_d: zyx
+        #gt_d: zyx
+        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
+        print("//////gt_d stats:", gt_d.abs().median().item(), gt_d.abs().mean().item())
+        print("/////vsize:", vsize_xyz)
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
 
         out = gen_net(radar_st)
-        pred, occ, attrs = out['st'], out['logits'], out['attrs']
-        offs = attrs[:, :, :3]
-        print(f'offs: {offs.abs().mean().item()}, {offs.abs().median().item()}, {offs.abs().min().item()}, {offs.abs().max().item()}')
 
-        voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
-        pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
-        voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-        # print(voxel_center_xyz.shape, pred_offset_m.shape)
-        print(f'pred_offset_m:{pred_offset_m.shape}, {type(pred_offset_m)}, voxel_center_xyz:{voxel_center_xyz}')
-        attrs = torch.cat([voxel_center_xyz+pred_offset_m, attrs[:, :, 3:4]], dim=-1)
-
-        _pred_indices = pred.indices.detach()
-        _attrs = attrs.detach() # xyz
-        if (torch.isnan(_attrs)).any():
-            print(f'_attrs has nan')
-        
-        # select valid slots by probability
         prob_thresh=0.9
-        probs = torch.sigmoid(occ)                 # [N,K,1]
-        keep = (probs > prob_thresh)
-        voxel_num_points = keep.sum(dim=1) #[N, ]
-        keep = keep.repeat(1,1,4) 
-        # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
-        # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
+        if not args.mdn:
+            pred, occ, attrs = out['st'], out['logits'], out['attrs']
+            offs = attrs[:, :, :3]
+            print(f'offs: {offs.abs().mean().item()}, {offs.abs().median().item()}, {offs.abs().min().item()}, {offs.abs().max().item()}')
 
-        _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs)).detach().cpu().numpy()
+            voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+            pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
+            voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+            # print(voxel_center_xyz.shape, pred_offset_m.shape)
+            print(f'pred_offset_m:{pred_offset_m.shape}, {type(pred_offset_m)}, voxel_center_xyz:{voxel_center_xyz}')
+            attrs = torch.cat([voxel_center_xyz+pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
-        # _attrs = torch.where(keep.unsqueeze(-1), attrs, torch.zeros_like(attrs)).detach().cpu().numpy()
-        points_xyz = _attrs[:,:, :3].reshape(-1, 3)
-        intensity = _attrs[:,:, -1].reshape(-1)
+            _pred_indices = pred.indices.detach()
+            _attrs = attrs.detach() # xyz
+            if (torch.isnan(_attrs)).any():
+                print(f'_attrs has nan')
+        
+            # select valid slots by probability
+            probs = torch.sigmoid(occ)                 # [N,K,1]
+            keep = (probs > prob_thresh)
+            voxel_num_points = keep.sum(dim=1) #[N, ]
+            keep = keep.repeat(1,1,4) 
+            # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
+            # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
 
-        points_xyz = np.ascontiguousarray(points_xyz)
-        intensity = np.ascontiguousarray(intensity)
-        # print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+            _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs)).detach().cpu().numpy()
+
+            # _attrs = torch.where(keep.unsqueeze(-1), attrs, torch.zeros_like(attrs)).detach().cpu().numpy()
+            points_xyz = _attrs[:,:, :3].reshape(-1, 3)
+            intensity = _attrs[:,:, -1].reshape(-1)
+
+            points_xyz = np.ascontiguousarray(points_xyz)
+            intensity = np.ascontiguousarray(intensity)
+            # print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+        
+        else:
+            offs, occ = out['mu_off'], out['occ_logit']
+            attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                                                                pred_st=out['st'],
+                                                                mu_off=out["mu_off"],
+                                                                log_sig_off=out["log_sig_off"],
+                                                                mix_logit=out["mix_logit"],
+                                                                mu_int=out["mu_int"],
+                                                                origin=origin,
+                                                                vsize_xyz=vsize_xyz,
+                                                                n_points_per_voxel=5,
+                                                                prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                sample_mode="mixture",  # or "top1" for deterministic
+                                                                clamp_intensity=(0.0, None),
+                                                            )
+            points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
+            intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
+
+            points_xyz = np.ascontiguousarray(points_xyz)
+            intensity = np.ascontiguousarray(intensity)
 
         # plot gt
-        voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
-        offset_m_gt = gt_d * vsize_xyz.to(d)  # scale voxel-units → meters
-        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 5, 1)
-        voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, args.gt_topk, 1, 1)
-        voxel_center_xyz_gt = voxel_center_xyz_gt.reshape(-1, 5, voxel_center_xyz_gt.shape[-1])
-        offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
+        # voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+        # offset_m_gt = gt_d * vsize_xyz.to(d)  # scale voxel-units → meters
+        # voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, 5, 1)
+        # voxel_center_xyz_gt = voxel_center_xyz_gt.unsqueeze(1).repeat(1, args.gt_topk, 1, 1) #[B, topk, 5, 3]
+        # voxel_center_xyz_gt = voxel_center_xyz_gt.reshape(-1, 5, voxel_center_xyz_gt.shape[-1])
+        # offset_m_gt = offset_m_gt.unsqueeze(1).repeat(1, 5, 1)
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
         attrs_gt = gt_f.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
@@ -297,7 +325,7 @@ if __name__ == '__main__':
         
         # randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
         # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
-        plot_quiver(pts_pred=rdr_points_xyz, off_pred=pred_offset_m.detach().cpu().numpy().reshape(-1, 3), name=os.path.join(fig_path, f"{set}_{bi}_offset_quiver.png"))
+        # plot_quiver(pts_pred=rdr_points_xyz, off_pred=pred_offset_m.detach().cpu().numpy().reshape(-1, 3), name=os.path.join(fig_path, f"{set}_{bi}_offset_quiver.png"))
         save_open3d_render_offsets(points_xyz=points_xyz, 
                                    points_gt=attrs_gt[:,:,:3].reshape(-1, 3), 
                                    points_rdr=rdr_points_xyz,

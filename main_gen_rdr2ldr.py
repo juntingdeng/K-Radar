@@ -21,6 +21,7 @@ from utils.util_config import *
 from models.skeletons import PVRCNNPlusPlus
 from models.skeletons.rdr_base import RadarBase
 from models.generatives.unet import *
+from models.generatives.generative import *
 
 from dataset_utils.KDataset import *
 from torch.amp import GradScaler
@@ -30,6 +31,7 @@ from pipelines.pipeline_dect import Validate
 def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--training', action='store_true')
+    args.add_argument('--mdn', action='store_true')
     args.add_argument('--log_sig', type=str, default='251211_145058')
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
@@ -91,9 +93,13 @@ if __name__ == '__main__':
 
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
-        gen_net = SparseUNet3D(in_ch=20).to(d)
-        gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
-        gen_opt = optim.SGD(gen_net.parameters(), lr=1e-3)
+        if not args.mdn:
+            gen_net = SparseUNet3D(in_ch=20).to(d)  
+            gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
+        else:
+            gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk)
+        gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
 
@@ -220,76 +226,87 @@ if __name__ == '__main__':
                     
                     out = gen_net(radar_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
 
-                    pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
-                    # if args.gen_enable:
-                    #     if not args.gen_stop_early or ei < args.gen_stop:
-                    #         loss_gen.backward()
-                    #         gen_opt.step()
+                    if not args.mdn:
+                        pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                        loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
+                        offs = attrs[:, :, :3]
+                        # print(f'offs: {offs}, ints: {ints}')
 
-                    #     running_loss_gen += loss_gen.detach().item()
+                        voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
+                        pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
+                        voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+                        # print(voxel_center_xyz.shape, pred_offset_m.shape)
+                        attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
-                    # out = gen_net(radar_st)
-                    # pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                    offs = attrs[:, :, :3]
-                    # print(f'offs: {offs}, ints: {ints}')
+                        _pred_indices = pred.indices#.detach()
+                        _attrs = attrs#.detach() # xyz
+                        if (torch.isnan(_attrs)).any():
+                            print(f'_attrs has nan')
 
-                    voxel_center_xyz = origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
-                    pred_offset_m = offs * vsize_xyz.to(d)  # scale voxel-units → meters
-                    voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-                    # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
+                        # select valid slots by probability
+                        prob_thresh=0.0
+                        probs = torch.sigmoid(occ)                 # [N,K,1]
+                        keep = (probs >= prob_thresh)
+                        voxel_num_points = keep.sum(dim=1) #[N, ]
+                        keep = keep.repeat(1,1,4) 
+                        # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
+                        # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
 
-                    _pred_indices = pred.indices#.detach()
-                    _attrs = attrs#.detach() # xyz
-                    if (torch.isnan(_attrs)).any():
-                        print(f'_attrs has nan')
+                        _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
-                    # select valid slots by probability
-                    prob_thresh=0.0
-                    probs = torch.sigmoid(occ)                 # [N,K,1]
-                    keep = (probs >= prob_thresh)
-                    voxel_num_points = keep.sum(dim=1) #[N, ]
-                    keep = keep.repeat(1,1,4) 
-                    # print(f'keep:{keep.shape}, _attrs:{_attrs.shape}')
-                    # print(f"batch_dict['voxel_num_points']: {voxel_num_points}")
-
-                    _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
-
-                    if model_cfg == 'ldr':
-                        if random.random() < rand_eps_ei:
+                        if model_cfg == 'ldr':
+                            if random.random() < rand_eps_ei:
+                                if _attrs.shape[0] < Nvoxels:
+                                    batch_dict['voxels'] = _attrs.contiguous().float().to(d)
+                                    batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
+                                    batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
+                                    batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
+                                    batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                                    batch_dict['voxel_num_points'] = voxel_num_points
+                                else:
+                                    _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
+                                    batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                                    batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
+                                    batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
+                                    batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
+                                    batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
+                                    batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        
+                        else:
                             if _attrs.shape[0] < Nvoxels:
-                                batch_dict['voxels'] = _attrs.contiguous().float().to(d)
-                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
-                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
-                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
-                                batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                                batch_dict['voxel_num_points'] = voxel_num_points
+                                batch_dict['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
+                                batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
+                                batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
+                                batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
+                                batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
+                                # batch_dict['voxel_num_points'] = voxel_num_points
                             else:
                                 _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
-                                batch_dict['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                                batch_dict['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
-                                batch_dict['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
-                                batch_dict['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
-                                batch_dict['voxel_coords'] = batch_dict['voxel_coords'].to(d)
-                                batch_dict['voxel_num_points'] = voxel_num_points[topN]
-                    
+                                batch_dict['sp_features'] = _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
+                                batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
+                                batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
+                                batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
+                                batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
+                                # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
-                        if _attrs.shape[0] < Nvoxels:
-                            batch_dict['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
-                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)
-                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)
-                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)
-                            batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
-                            # batch_dict['voxel_num_points'] = voxel_num_points
-                        else:
-                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=Nvoxels)
-                            batch_dict['sp_features'] = _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
-                            batch_dict['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, z_size-1)[topN]
-                            batch_dict['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, y_size-1)[topN]
-                            batch_dict['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, x_size-1)[topN]
-                            batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
-                            # batch_dict['voxel_num_points'] = voxel_num_points[topN]
+                        loss_gen = gen_loss(out, radar_st, lidar_st)
+                        attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                                                                                        pred_st=out['st'],
+                                                                                        mu_off=out["mu_off"],
+                                                                                        log_sig_off=out["log_sig_off"],
+                                                                                        mix_logit=out["mix_logit"],
+                                                                                        mu_int=out["mu_int"],
+                                                                                        origin=origin,
+                                                                                        vsize_xyz=vsize_xyz,
+                                                                                        n_points_per_voxel=5,
+                                                                                        prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                                        sample_mode="mixture",  # or "top1" for deterministic
+                                                                                        clamp_intensity=(0.0, None),
+                                                                                    )
+
+                        batch_dict["voxels"] = attrs_pts.float()
+                        batch_dict["voxel_coords"] = voxel_coords
+                        batch_dict["voxel_num_points"] = voxel_num_points
                         
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
