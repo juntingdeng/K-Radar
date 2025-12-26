@@ -243,7 +243,7 @@ if __name__ == '__main__':
         
         else:
             offs, occ = out['mu_off'], out['occ_logit']
-            attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+            attrs_pts, attrs_mu_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
                                                                 log_sig_off=out["log_sig_off"],
@@ -253,14 +253,16 @@ if __name__ == '__main__':
                                                                 vsize_xyz=vsize_xyz,
                                                                 n_points_per_voxel=5,
                                                                 prob_thresh=0.05,       # tune: 0.0 ~ 0.2
-                                                                sample_mode="mixture",  # or "top1" for deterministic
+                                                                sample_mode="top1",  # ['top1', 'mixture']
                                                                 clamp_intensity=(0.0, None),
                                                             )
-            points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
-            intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
-
+            points_xyz = attrs_mu_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
+            intensity = attrs_mu_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
             points_xyz = np.ascontiguousarray(points_xyz)
             intensity = np.ascontiguousarray(intensity)
+
+            points_xyz_sp = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
+            points_xyz_sp = np.ascontiguousarray(points_xyz_sp)
 
         # plot gt
         # voxel_center_xyz_gt = origin + (torch.flip(radar_st.indices[:, 1:4].float(), dims=[1]) + 0.5) * vsize_xyz  # grid center
@@ -365,7 +367,7 @@ if __name__ == '__main__':
 
         # radar_pts: (Nr, 3), lidar_pts: (Nl, 3), pred_pts_union: (Np, 3)
         bin_x, radar_err, lidar_err, radar_cnt, lidar_cnt = modality_error_vs_range_numpy_with_zero(
-            rdr_points_xyz, ldr_points_xyz, points_xyz, num_bins=700
+            rdr_points_xyz, ldr_points_xyz, points_xyz_sp, num_bins=700
         )
 
         # Plot

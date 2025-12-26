@@ -195,8 +195,7 @@ class SynthLocalLoss_MDN(nn.Module):
         logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * log_sigma_ + log2pi).sum(dim=-1)  # (M,T,K)
 
         log_mix = logN + log_pi.unsqueeze(1)          # (M,T,K)
-        logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
-        return logp
+        return log_mix
 
     def forward(self, out_dict, radar_st: SparseConvTensor, lidar_st: SparseConvTensor):
         """
@@ -228,7 +227,8 @@ class SynthLocalLoss_MDN(nn.Module):
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
-            logp = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
+            log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
+            logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
             mdn_nll = -(logp.mean())                             # scalar
 
             # ---------- Optional: intensity loss weighted by responsibilities ----------
@@ -236,35 +236,21 @@ class SynthLocalLoss_MDN(nn.Module):
             # We'll extract GT intensity per topk match as mean over the 5 points.
             int_loss = torch.tensor(0.0, device=mu_off.device)
             if self.w_int > 0 and gt_feat.shape[-1] % 4 == 0:
+                r = torch.softmax(log_mix, dim=-1)
+
                 C = gt_feat.shape[-1]
                 gt_pts = gt_feat.view(gt_feat.shape[0], gt_feat.shape[1], C // 4, 4)  # (N,T,P,4)
                 gt_int = gt_pts[..., 3].mean(dim=2)                                   # (N,T)
                 gt_int_m = gt_int[matched_mask]                                       # (M,T)
-
-                # Responsibilities r_{t,k} ∝ pi_k N(y_t|...)
-                if ml_m.ndim == 3:
-                    ml_m2 = ml_m.squeeze(-1)  # (M,K)
-                else:
-                    ml_m2 = ml_m
-
-                log_pi = F.log_softmax(ml_m2, dim=1)  # (M,K)
-
-                # compute component log probs (M,T,K)
-                y_  = y_m.unsqueeze(2)        # (M,T,1,3)
-                mu_ = mu_m.unsqueeze(1)       # (M,1,K,3)
-                ls_ = ls_m.unsqueeze(1)       # (M,1,K,3)
-                sigma2_ = torch.exp(2.0 * ls_) + 1e-12
-
-                log2pi = np.log(2.0 * np.pi)
-                logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * ls_ + log2pi).sum(dim=-1)  # (M,T,K)
-                log_post = logN + log_pi.unsqueeze(1)                                          # (M,T,K)
-                r = torch.softmax(log_post, dim=-1)                                            # (M,T,K)
+                gt_int_m   = gt_int_m.unsqueeze(-1)                    # (M,T,1)
 
                 pred_int_m = mu_int[matched_mask].squeeze(-1)          # (M,K)
                 pred_int_m = pred_int_m.unsqueeze(1)                   # (M,1,K)
-                gt_int_m   = gt_int_m.unsqueeze(-1)                    # (M,T,1)
 
                 int_loss = (r * (pred_int_m - gt_int_m).abs()).mean()
+            else:
+                # Fallback: skip if format isn't P*4
+                int_loss = torch.tensor(0.0, device=mu_m.device)
 
         else:
             mdn_nll = mu_off.sum() * 0.0
@@ -338,12 +324,17 @@ def sample_points_from_mdn(
 
     xyz = voxel_center_xyz.unsqueeze(1) + sampled_off_m          # (N,P,3)
 
+    sampled_off_vox_mu = mu.unsqueeze(1)  # voxel units
+    sampled_off_m_mu = sampled_off_vox_mu * vsize_xyz.view(1, 1, 3)   # meters
+    xyz_mu = voxel_center_xyz.unsqueeze(1) + sampled_off_m_mu          # (N,P,3)
+
     # intensity per point
     if mu_int is None:
         inten = torch.zeros((N, P, 1), device=device, dtype=mu.dtype)
     else:
         inten_k = mu_int.squeeze(-1)[torch.arange(N, device=device), chosen_k]  # (N,)
         inten = inten_k.view(N, 1, 1).repeat(1, P, 1)                           # (N,P,1)
+        inten_mu = inten_k.view(N, 1, 1)
 
     # optional clamp
     if clamp_intensity is not None:
@@ -366,8 +357,11 @@ def sample_points_from_mdn(
     xyz = torch.where(keep.view(N, 1, 1), xyz, torch.zeros_like(xyz))
     inten = torch.where(keep.view(N, 1, 1), inten, torch.zeros_like(inten))
 
+    # attrs: Samples with +sigma lead to better CDF error but blurred visualization results. 
+    # attrs_mu: Samples without +sigma, i.e., only mu, to get cleaner visualization.
     attrs = torch.cat([xyz, inten], dim=-1)  # (N,P,4)
+    attrs_mu = torch.cat([xyz_mu, inten_mu], dim=-1)  # (N,1,4)
 
     voxel_coords = pred_st.indices.int()     # (N,4)
 
-    return attrs.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen
+    return attrs.contiguous(), attrs_mu.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen

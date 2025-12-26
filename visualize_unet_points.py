@@ -540,6 +540,7 @@ def plot_mapping_error_cdf(
     ax.set_xlabel("Error ({})".format(unit))
     ax.set_ylabel("CDF")
     ax.set_ylim([0, 1])
+    ax.set_xlim([0, 8])
     ax.grid(True)
     ax.legend()
     ax.set_title(title)
