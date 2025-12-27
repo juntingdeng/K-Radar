@@ -40,6 +40,7 @@ def arg_parser():
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--dect_start_late', action='store_true')
     args.add_argument('--dect_start', type=int, default=80)
+    args.add_argument('--fixed_nvoxels', default=None, type=int)
 
     args.add_argument('--gen_stop_early', action='store_true')
     args.add_argument('--gen_stop', type=float, default=200)
@@ -98,7 +99,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.3)
         gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
@@ -174,47 +175,48 @@ if __name__ == '__main__':
                         elif isinstance(val, torch.Tensor) and val.device != device:
                             batch_dict[key] = batch_dict[key].to(device)
 
-                if args.gen_enable:
-                    rdr_data = batch_dict['sp_features']
-                    # print(f"sp_features:{batch_dict['sp_features'].shape}")
-                    if rdr_data.shape[0] < Nvoxels:
-                        n = rdr_data.shape[0]
-                        while n < Nvoxels:
-                            rdr_data = torch.vstack([rdr_data, rdr_data[ :Nvoxels - n]])
-                            batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], batch_dict['sp_indices'][: Nvoxels- n]])
+                if args.fixed_nvoxels:
+                    if args.gen_enable:
+                        rdr_data = batch_dict['sp_features']
+                        # print(f"sp_features:{batch_dict['sp_features'].shape}")
+                        if rdr_data.shape[0] < Nvoxels:
                             n = rdr_data.shape[0]
-                        
-                        batch_dict['sp_features'] = rdr_data
-                        #bzyx
+                            while n < Nvoxels:
+                                rdr_data = torch.vstack([rdr_data, rdr_data[ :Nvoxels - n]])
+                                batch_dict['sp_indices'] = torch.vstack([batch_dict['sp_indices'], batch_dict['sp_indices'][: Nvoxels- n]])
+                                n = rdr_data.shape[0]
+                            
+                            batch_dict['sp_features'] = rdr_data
+                            #bzyx
 
-                ldr_data = batch_dict['voxels']
-                lmin, lmax = ldr_data.min(), ldr_data.max()
-                if ldr_data.shape[0] < Nvoxels:
-                    n = ldr_data.shape[0]
-                    while n < Nvoxels:
-                        ldr_data = torch.vstack([ldr_data, ldr_data[: Nvoxels - n]])
-                        batch_dict['voxels'] = ldr_data
-                        #bzyx
-                        batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], batch_dict['voxel_coords'][: Nvoxels- n]])
-                        batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], batch_dict['voxel_num_points'][: Nvoxels - n]])
+                    ldr_data = batch_dict['voxels']
+                    lmin, lmax = ldr_data.min(), ldr_data.max()
+                    if ldr_data.shape[0] < Nvoxels:
                         n = ldr_data.shape[0]
-                    # print('Here::::::::21 ', batch_dict['voxel_num_points'],  {sum(batch_dict['voxel_num_points'])})
-                    # print(f"batch_dict['voxels']: {batch_dict['voxels'][:, :, -1]}")
+                        while n < Nvoxels:
+                            ldr_data = torch.vstack([ldr_data, ldr_data[: Nvoxels - n]])
+                            batch_dict['voxels'] = ldr_data
+                            #bzyx
+                            batch_dict['voxel_coords'] = torch.vstack([batch_dict['voxel_coords'], batch_dict['voxel_coords'][: Nvoxels- n]])
+                            batch_dict['voxel_num_points'] = torch.concat([batch_dict['voxel_num_points'], batch_dict['voxel_num_points'][: Nvoxels - n]])
+                            n = ldr_data.shape[0]
+                        # print('Here::::::::21 ', batch_dict['voxel_num_points'],  {sum(batch_dict['voxel_num_points'])})
+                        # print(f"batch_dict['voxels']: {batch_dict['voxels'][:, :, -1]}")
                 
                 if args.gen_enable:
                     # spconv unet
                     # print('2', ei, bi, batch_dict['sp_features'].shape)
-                    radar_st = SparseConvTensor(features=batch_dict['sp_features'].reshape((Nvoxels, -1)), 
+                    radar_st = SparseConvTensor(features=batch_dict['sp_features'].reshape((batch_dict['sp_features'].shape[0], -1)), 
                                                 indices=batch_dict['sp_indices'].int(), #bzyx
                                                 spatial_shape=[z_size, y_size, x_size], 
                                                 batch_size=bs)
 
-                    lidar_st = SparseConvTensor(features=batch_dict['voxels'].reshape((Nvoxels, -1)), 
+                    lidar_st = SparseConvTensor(features=batch_dict['voxels'].reshape((batch_dict['voxels'].shape[0], -1)), 
                                                 indices=batch_dict['voxel_coords'].int(), #bzyx
                                                 spatial_shape=[z_size, y_size, x_size], 
                                                 batch_size=bs)
 
-
+                    # print(f'//////////// Here, radar:{radar_st.features.shape}, lidar:{lidar_st.features.shape}')
                     # Pseudocode
                     rad_idx = radar_st.indices           # [Nr,4]
                     lid_idx = lidar_st.indices           # [Nl,4]
@@ -290,7 +292,7 @@ if __name__ == '__main__':
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
                         loss_gen = gen_loss(out, radar_st, lidar_st)
-                        attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                        attrs_pts, attrs_mu_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
                                                                                         log_sig_off=out["log_sig_off"],
