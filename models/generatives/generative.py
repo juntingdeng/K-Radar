@@ -228,13 +228,21 @@ class SynthLocalLoss_MDN(nn.Module):
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
+            dist_t = torch.norm(y_m, dim=-1)           # (M,T)
+            beta = 2.0   # distance scale (tune: ~1–3 voxels or meters)
+            w_t = torch.exp(-dist_t / beta)             # (M,T)
+            # normalize weights for numerical stability
+            w_t = w_t / (w_t.sum(dim=1, keepdim=True) + 1e-12)
+
             log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
             logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
             # mdn_nll = -(logp.mean())                             # scalar
             # soft-min over targets:
             # loss_i = -tau * logsumexp_t (logp_t / tau)
             tau = float(self.tau_targets)
-            mdn_nll_per = -tau * torch.logsumexp(logp / tau, dim=1)  # (M,)
+            # ---- soft-min with distance weighting ----
+            weighted_logp = logp / tau + torch.log(w_t + 1e-12)
+            mdn_nll_per = -tau * torch.logsumexp(weighted_logp, dim=1)  # (M,)
             mdn_nll = mdn_nll_per.mean()
 
             # ---------- Optional: intensity loss weighted by responsibilities ----------

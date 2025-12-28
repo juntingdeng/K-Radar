@@ -99,7 +99,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.3)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.5)
         gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
@@ -388,8 +388,6 @@ if __name__ == '__main__':
                 else:
                     print(f'epoch:{ei}, loss_dect:{loss_dect.detach().item():.4f}')
 
-
-        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
         if args.gen_enable:
             plt.plot(loss_gen_curve, label='gen-loss')
         plt.plot(loss_dect_curve, label='dect-loss')
@@ -397,3 +395,4 @@ if __name__ == '__main__':
         plt.ylabel('Loss')
         plt.legend()
         plt.savefig(os.path.join(ppl.path_log, 'loss.png'))
+        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
