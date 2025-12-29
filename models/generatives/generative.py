@@ -238,7 +238,6 @@ class SynthLocalLoss_MDN(nn.Module):
             logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
             # mdn_nll = -(logp.mean())                             # scalar
             # soft-min over targets:
-            # loss_i = -tau * logsumexp_t (logp_t / tau)
             tau = float(self.tau_targets)
             # ---- soft-min with distance weighting ----
             weighted_logp = logp / tau + torch.log(w_t + 1e-12)

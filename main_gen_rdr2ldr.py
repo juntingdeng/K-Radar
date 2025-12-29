@@ -35,7 +35,7 @@ def arg_parser():
     args.add_argument('--log_sig', type=str, default='251211_145058')
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
-    args.add_argument('--nepochs', type=int, default=300)
+    args.add_argument('--nepochs', type=int, default=200)
     args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--dect_start_late', action='store_true')
@@ -100,7 +100,7 @@ if __name__ == '__main__':
         else:
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
             gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.5)
-        gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
+        gen_opt = optim.AdamW(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
 

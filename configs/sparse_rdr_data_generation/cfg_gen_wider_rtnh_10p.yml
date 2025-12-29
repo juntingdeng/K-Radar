@@ -25,13 +25,13 @@ GENERAL:
 ### ----- Sparse Data ----- ###
 # For v1.1
 SPARSE_DATA:
-  NAME: 'rtnh_wider_01p_1'
+  NAME: 'rtnh_wider_10p_1'
   HEADER: 'sprdr'
   COMMENT: 'quantile -> roi'
   SAVE_FOLDER: '/home/juntingd/research/3DImage/lidar/K-radar/data/sequences/gen_sparse_rdr'
 
   NORM_VAL: 1e+13
-  QUANTILE_RATE: 0.001
+  QUANTILE_RATE: 0.1
 # RDR_CUBE.GENERATE_SPARSE_CUBE for v1 
 ### ----- Sparse Data ----- ###
 
