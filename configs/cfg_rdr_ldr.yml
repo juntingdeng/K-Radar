@@ -62,8 +62,8 @@ DATASET:
   rdr_sparse: {
     'processed': True,
     # 'dir': '../data/rdr_splt_data'
-    # 'dir': '/home/juntingd/research/3DImage/lidar/K-radar/data/rdr_sparse_data/sparse_radar_tensor_wide_range/rtnh_wider_1p_1'
-    'dir': '../data/sequences/gen_sparse_rdr/rtnh_wider_001p_1'
+    'dir': '/home/juntingd/research/3DImage/lidar/K-radar/data/rdr_sparse_data/sparse_radar_tensor_wide_range/rtnh_wider_1p_1'
+    # 'dir': '../data/sequences/gen_sparse_rdr/rtnh_wider_1p_1'
   }
   roi: {
     'filter': True,

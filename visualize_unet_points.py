@@ -428,10 +428,10 @@ def nn_error_vs_x_numpy_with_zero(gt_points, pred_points, num_bins, x_min, x_max
         return bin_centers, mean_errors, counts
 
     # Build KD-tree for predicted points
-    tree = cKDTree(pred_points[:, :3])
+    tree = cKDTree(pred_points[:, :2])
 
     # NN distances for GT points
-    dists, _ = tree.query(gt_points[:, :3], k=1)
+    dists, _ = tree.query(gt_points[:, :2], k=1)
 
     xs = gt_points[:, 0]
     bin_idx = np.digitize(xs, bins) - 1

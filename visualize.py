@@ -252,7 +252,7 @@ if __name__ == '__main__':
                                                                 origin=origin,
                                                                 vsize_xyz=vsize_xyz,
                                                                 n_points_per_voxel=5,
-                                                                prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                prob_thresh=0.7,       # tune: 0.0 ~ 0.2
                                                                 sample_mode="top1",  # ['top1', 'mixture']
                                                                 clamp_intensity=(0.0, None),
                                                             )
@@ -337,7 +337,7 @@ if __name__ == '__main__':
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"{set}_{bi}_offset.png"), 
                                       pose=pose)
-        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+        save_open3d_render_fixed_pose(points_xyz=points_xyz_sp, 
                                       intensities=intensity, 
                                       boxes=gt_boxes,
                                       filename=os.path.join(fig_path, f"{set}_{bi}_pred1.png"), 

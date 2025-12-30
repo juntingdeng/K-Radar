@@ -39,7 +39,7 @@ def arg_parser():
     args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--dect_start_late', action='store_true')
-    args.add_argument('--dect_start', type=int, default=80)
+    args.add_argument('--dect_start', type=int, default=200)
     args.add_argument('--fixed_nvoxels', default=None, type=int)
 
     args.add_argument('--gen_stop_early', action='store_true')

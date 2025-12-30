@@ -1155,5 +1155,5 @@ if __name__ == '__main__':
     # dataset = KRadarDetection_v1_1(cfg=cfg, split='train')
     # dataset.generate_sparse_rdr_cube_for_wider_rtnh(vis_for_check=False, vis_in_sampled_sphere=False)
 
-    dataset = KRadarDetection_v1_1(cfg=cfg, split='train')
+    dataset = KRadarDetection_v1_1(cfg=cfg, split='test')
     dataset.generate_sparse_rdr_cube_for_wider_rtnh(vis_for_check=False, vis_in_sampled_sphere=False)

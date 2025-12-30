@@ -229,8 +229,14 @@ class SynthLocalLoss_MDN(nn.Module):
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
             dist_t = torch.norm(y_m, dim=-1)           # (M,T)
-            beta = 2.0   # distance scale (tune: ~1–3 voxels or meters)
-            w_t = torch.exp(-dist_t / beta)             # (M,T)
+            # dist_t_max = torch.max(dist_t, dim=1).values      #(M,)
+            # dist_t_min = torch.min(dist_t, dim=1).values      #(M,)
+            # dist_t_diff = torch.abs(dist_t_max - dist_t_min)
+            # print(f'/////////////// dist mean:{dist_t.mean()}')
+            # print(f'/////////////// dist_diff mean:{dist_t_diff.mean()}')
+            beta = 50.0   # distance scale (tune: ~1–3 voxels or meters)
+            w_t = torch.exp(-dist_t**2 / beta**2)             # (M,T)
+            # print(f'/////////////// wt mean:{w_t.mean()}')
             # normalize weights for numerical stability
             w_t = w_t / (w_t.sum(dim=1, keepdim=True) + 1e-12)
 
