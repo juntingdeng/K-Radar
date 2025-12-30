@@ -99,7 +99,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.5)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.3)
         gen_opt = optim.AdamW(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
@@ -120,6 +120,7 @@ if __name__ == '__main__':
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')
     os.makedirs(save_model_path, exist_ok=True)
+    # scheduler_gen = CosineAnnealingLR(gen_opt, T_max=args.nepochs)
     scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
 
     n_epochs = args.nepochs
@@ -348,6 +349,7 @@ if __name__ == '__main__':
                     batch_dict[temp_key] = None
 
             scheduler.step()
+            # scheduler_gen.step()
 
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
@@ -360,6 +362,7 @@ if __name__ == '__main__':
                         'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
                         'lr': scheduler.get_last_lr(),
+                        # 'lr_gen': scheduler_gen.get_last_lr(),
                         'loss_gen': loss_gen.detach().item(),
                         'loss_dect': loss_dect.detach().item()
                     }
