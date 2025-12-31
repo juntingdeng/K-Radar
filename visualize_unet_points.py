@@ -397,7 +397,7 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
     # 2) select valid slots by probability
     # probs = torch.sigmoid(logits)                 # [N,K]
     keep  = occ >= prob_thresh                  # [N,K, 1] bool
-    print(f'keep shape:{keep.shape}')
+    # print(f'keep shape:{keep.shape}')
     keep = keep.squeeze()
 
     # 3) offsets: voxel units → meters
@@ -405,7 +405,7 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
         offs = torch.clamp(offs, -0.5, 0.5)       # optional, keeps points inside voxel
     scale = offs.new_tensor([vx, vy, vz])         # [3]
     offs_m = offs * scale                         # [N,K,3] meters
-    print('centers: ', centers)
+    # print('centers: ', centers)
 
     # 4) assemble world xyz per slot
     xyz = centers[:, :].unsqueeze(1).repeat(1, 5, 1) + offs_m              # [N,K,3]
@@ -484,7 +484,7 @@ def modality_error_vs_range_numpy_with_zero(
         lidar_points, pred_points, num_bins, x_min, x_max
     )
 
-    return bx_radar, radar_err, lidar_err, radar_cnt, lidar_cnt
+    return bx_radar, radar_err, lidar_err, radar_cnt, lidar_cnt, x_min, x_max
 
 import matplotlib.pyplot as plt
 

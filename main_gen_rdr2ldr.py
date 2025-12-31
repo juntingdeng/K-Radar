@@ -100,7 +100,7 @@ if __name__ == '__main__':
         else:
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
             gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, tau_targets=0.3)
-        gen_opt = optim.AdamW(gen_net.parameters(), lr=1e-3)
+        gen_opt = optim.SGD(gen_net.parameters(), lr=1e-3)
     else:
         gen_net = None
 
