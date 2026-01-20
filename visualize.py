@@ -26,8 +26,9 @@ def arg_parser():
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--mdn', action='store_true')
-    args.add_argument('--plot_nframes', default=0, type=int)
+    args.add_argument('--plot_nframes', default=2, type=int)
     args.add_argument('--plot_all', action='store_true')
+    args.add_argument('--newtest', default=None, type=str)
     return args.parse_args()
 
 def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
@@ -141,8 +142,9 @@ if __name__ == '__main__':
     x_min_all, x_max_all = float('inf'), 0
     radar_error_all, lidar_err_all = [], []
     for bi, batch_dict in enumerate(dl):
+        print(f'here{bi}')
         if not args.plot_all and bi >= args.plot_nframes: break
-
+        print(bi)
         batch_dict = rdr_processor.forward(batch_dict)
         batch_dict = ldr_processor.forward(batch_dict)
 
@@ -316,6 +318,8 @@ if __name__ == '__main__':
         # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
         # plot_quiver(pts_pred=rdr_points_xyz, off_pred=pred_offset_m.detach().cpu().numpy().reshape(-1, 3), name=os.path.join(fig_path, f"{set}_{bi}_offset_quiver.png"))
         if bi < args.plot_nframes:
+            prefix = f"{set}_{bi}" if not args.newtest else f"{set}_new{args.newtest}_{bi}"
+            print(f'/////// prefix:{prefix}')
             save_open3d_render_offsets(points_xyz=points_xyz, 
                                     points_gt=attrs_gt[:,:,:3].reshape(-1, 3), 
                                     points_rdr=rdr_points_xyz,
@@ -323,33 +327,33 @@ if __name__ == '__main__':
                                         intensities_gt=intensity_gt, 
                                         intensities_rdr=rdr_intensities,
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_offset.png"), 
+                                        filename=os.path.join(fig_path, f"{prefix}_offset.png"), 
                                         pose=pose)
             save_open3d_render_fixed_pose(points_xyz=points_xyz_sp, 
                                         intensities=intensity, 
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_pred1.png"), 
+                                        filename=os.path.join(fig_path, f"{prefix}_pred1.png"), 
                                         pose=pose)
             save_open3d_render_fixed_pose(points_xyz=pred_xyz, 
                                         intensities=intensity, 
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_pred2.png"), 
+                                        filename=os.path.join(fig_path, f"{prefix}_pred2.png"), 
                                         pose=pose)
             save_open3d_render_fixed_pose(rdr_points_xyz, 
                                         intensities=rdr_intensities, 
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_rdr.png"),   
+                                        filename=os.path.join(fig_path, f"{prefix}_rdr.png"),   
                                         pose=pose)
             save_open3d_render_fixed_pose(ldr_points_xyz, 
                                         intensities=ldr_intensities, 
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_ldr.png"),  
+                                        filename=os.path.join(fig_path, f"{prefix}_ldr.png"),  
                                         pose=pose)
             
             save_open3d_render_fixed_pose(points_xyz=attrs_gt[:,:,:3].reshape(-1, 3), 
                                         intensities=intensity_gt, 
                                         boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{set}_{bi}_gt.png"), 
+                                        filename=os.path.join(fig_path, f"{prefix}_gt.png"), 
                                         pose=pose)
 
 
@@ -358,13 +362,13 @@ if __name__ == '__main__':
             rdr_points_xyz, ldr_points_xyz, points_xyz_sp, num_bins=700
         )
         if bi< args.plot_nframes:
-            plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"{set}_{bi}_error_cdf.png"))
+            plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"{prefix}_error_cdf.png"))
 
         x_min_all, x_max_all = min(x_min_all, _x_min), max(x_max_all, x_max)
         radar_error_all.append(radar_err)
         lidar_err_all.append(lidar_err)
 
-    plot_mapping_error_cdf(radar_dists=np.stack(radar_error_all).reshape(-1), lidar_dists=np.stack(lidar_err_all).reshape(-1), unit='m', save_path=os.path.join(fig_path, f"{set}_all_error_cdf.png"))
+    # plot_mapping_error_cdf(radar_dists=np.stack(radar_error_all).reshape(-1), lidar_dists=np.stack(lidar_err_all).reshape(-1), unit='m', save_path=os.path.join(fig_path, f"{set}_all_error_cdf.png"))
 
         # # Plot
         # plt.figure()
