@@ -7,3 +7,8 @@
 *.egg*
 *.yml
 *.png
+*.jpg
+*.npy
+*.svg
+*/visualize
+./visualize_noeval/*

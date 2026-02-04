@@ -40,6 +40,8 @@ from dataset_utils.KDataset import *
 from models.generatives.unet import *
 # from visualize import *
 from visualize_unet_points import *
+from models.generatives.unet_utlis import *
+from models.generatives.generative import *
 
 d = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -55,10 +57,11 @@ def get_local_time_str():
     return f'{tm_year}{tm_mon}{tm_mday}_{tm_hour}{tm_min}{tm_sec}'
 
 class Validate:
-    def __init__(self, cfg, gen_net, dect_net, spatial_size=[], model_cfg='ldr'):
+    def __init__(self, cfg, gen_net, dect_net, spatial_size=[], model_cfg='ldr', mdn=False):
         self.is_validate = True
         self.gen_net = gen_net
         self.dect_net = dect_net
+        self.mdn = mdn
         self.model_cfg = model_cfg
         self.cfg = cfg
         self.is_consider_subset = self.cfg.VAL.IS_CONSIDER_VAL_SUBSET
@@ -328,127 +331,147 @@ class Validate:
                 out = self.gen_net(radar_st) 
                 # print(f"/////////////indices shape: {rad_idx.shape}, {lid_idx.shape}, {union_st.indices.shape}, {out['st'].indices.shape}")
 
-                # pred, occ, attrs = out['st'], out['logits'], out['attrs']
-                # offs = attrs[:, :, :3]
-                pred, occ, attrs = out['st'], out['logits'],  out['attrs']
-                offs = attrs[:, :, :3]
+                if not self.mdn:
+                    # pred, occ, attrs = out['st'], out['logits'], out['attrs']
+                    # offs = attrs[:, :, :3]
+                    pred, occ, attrs = out['st'], out['logits'],  out['attrs']
+                    offs = attrs[:, :, :3]
 
-                voxel_center_xyz = self.origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
-                pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
-                voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
-                # print(voxel_center_xyz.shape, pred_offset_m.shape)
-                attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
+                    voxel_center_xyz = self.origin + (torch.flip(pred.indices[:, 1:4].float(), dims=[1]) + 0.5) * torch.tensor(self.voxel_size).to(d)  # grid center
+                    pred_offset_m = offs * self.voxel_size #scale voxel-units → meters
+                    voxel_center_xyz = voxel_center_xyz.unsqueeze(1).repeat(1, 5, 1)
+                    # print(voxel_center_xyz.shape, pred_offset_m.shape)
+                    attrs = torch.cat([voxel_center_xyz + pred_offset_m, attrs[:, :, 3:4]], dim=-1)
 
-                _pred_indices = pred.indices.detach()
-                _attrs = attrs.detach()
-                if (torch.isnan(_attrs)).any():
-                    print(f'_attrs has nan')
+                    _pred_indices = pred.indices.detach()
+                    _attrs = attrs.detach()
+                    if (torch.isnan(_attrs)).any():
+                        print(f'_attrs has nan')
 
-                # select valid slots by probability
-                prob_thresh=0.0
-                probs = torch.sigmoid(occ)                 # [N,K,1]
-                keep = (probs >= prob_thresh)
-                voxel_num_points = keep.sum(dim=1) #[N, ]
-                keep = keep.repeat(1,1,4) 
-                # _attrs = _attrs[keep][:, None, :]
-                _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
+                    # select valid slots by probability
+                    prob_thresh=0.0
+                    probs = torch.sigmoid(occ)                 # [N,K,1]
+                    keep = (probs >= prob_thresh)
+                    voxel_num_points = keep.sum(dim=1) #[N, ]
+                    keep = keep.repeat(1,1,4) 
+                    # _attrs = _attrs[keep][:, None, :]
+                    _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
 
-                vis = False
-                if vis:
-                    points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
-                    intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
+                    vis = False
+                    if vis:
+                        points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
+                        intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
 
-                    points_xyz = np.ascontiguousarray(points_xyz)
-                    intensity = np.ascontiguousarray(intensity)
-                    print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+                        points_xyz = np.ascontiguousarray(points_xyz)
+                        intensity = np.ascontiguousarray(intensity)
+                        print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
 
-                    ldr_points_xyz=np.ascontiguousarray(dict_datum['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
-                    ldr_intensities=np.ascontiguousarray(dict_datum['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
+                        ldr_points_xyz=np.ascontiguousarray(dict_datum['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
+                        ldr_intensities=np.ascontiguousarray(dict_datum['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
 
-                    # Pick a shared camera pose (e.g., from LiDAR cloud)
-                    pose = compute_reference_pose(ldr_points_xyz, view="bev")
+                        # Pick a shared camera pose (e.g., from LiDAR cloud)
+                        pose = compute_reference_pose(ldr_points_xyz, view="bev")
 
-                    # Save all with the SAME pose
-                    fig_path = os.path.join('visualize', 'test')
-                    os.makedirs(fig_path, exist_ok=True)
-                    list_tuple_objs = dict_datum['meta'][0]['label']
-                    dx, dy, dz = dict_datum['meta'][0]['calib']
-                    gt_boxes = []
-                    for obj in list_tuple_objs:
-                        cls_name, (x, y, z, th, l, w, h), trk, avail = obj
-                        x = x + dx
-                        y = y + dy
-                        z = z + dz
-                        print(f'dx, dy, dz: {dx}, {dy}, {dz}')
-                        gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
+                        # Save all with the SAME pose
+                        fig_path = os.path.join('visualize', 'test')
+                        os.makedirs(fig_path, exist_ok=True)
+                        list_tuple_objs = dict_datum['meta'][0]['label']
+                        dx, dy, dz = dict_datum['meta'][0]['calib']
+                        gt_boxes = []
+                        for obj in list_tuple_objs:
+                            cls_name, (x, y, z, th, l, w, h), trk, avail = obj
+                            x = x + dx
+                            y = y + dy
+                            z = z + dz
+                            print(f'dx, dy, dz: {dx}, {dy}, {dz}')
+                            gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
 
-                    save_open3d_render_fixed_pose(points_xyz=points_xyz, 
-                                                intensities=intensity, 
-                                                boxes=gt_boxes,
-                                                filename=os.path.join(fig_path, f"pred1_test_{idx_datum}.png"), 
-                                                pose=pose)
-                    save_open3d_render_fixed_pose(ldr_points_xyz, 
-                                    intensities=ldr_intensities, 
-                                    boxes=gt_boxes,
-                                    filename=os.path.join(fig_path, f"ldr_test_{idx_datum}.png"),  
-                                    pose=pose)
-                      
-                # keep = torch.any(keep, dim=1, keepdim=False)
-                # print(f'keep: {keep.shape}')
-                # _pred_indices = torch.where(keep, _pred_indices, torch.zeros_like(_pred_indices))
-                # print(f'_pred_indices:{_pred_indices.shape}'
-                if save_res:
-                    dict_cp = copy.deepcopy(dict_datum)
-                    for key, val in dict_datum.items():
-                        if hasattr(val, 'device'):
-                            dict_cp[key] = val.to('cpu')
-                    with open(os.path.join(self.path_log, f'gt{idx_datum}.pickle'), 'wb') as file:
-                        pickle.dump(dict_cp, file)
-                
-                if self.model_cfg == 'ldr':
-                    if random.random() < 1:
-                        if _attrs.shape[0] < self.Nvoxels:
-                            dict_datum['voxels'] = _attrs.contiguous().float().to(d)
-                            dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
-                            dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
-                            dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
-                            dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                            dict_datum['voxel_num_points'] = voxel_num_points
-                        else:
-                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                            dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
-                            dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
-                            dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
-                            dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
-                            dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
-                            dict_datum['voxel_num_points'] = voxel_num_points[topN]
-
-
+                        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+                                                    intensities=intensity, 
+                                                    boxes=gt_boxes,
+                                                    filename=os.path.join(fig_path, f"pred1_test_{idx_datum}.png"), 
+                                                    pose=pose)
+                        save_open3d_render_fixed_pose(ldr_points_xyz, 
+                                        intensities=ldr_intensities, 
+                                        boxes=gt_boxes,
+                                        filename=os.path.join(fig_path, f"ldr_test_{idx_datum}.png"),  
+                                        pose=pose)
+                        
+                    # keep = torch.any(keep, dim=1, keepdim=False)
+                    # print(f'keep: {keep.shape}')
+                    # _pred_indices = torch.where(keep, _pred_indices, torch.zeros_like(_pred_indices))
+                    # print(f'_pred_indices:{_pred_indices.shape}'
                     if save_res:
-                        
-                        dict_cp = dict()
-                        dict_cp['voxels'] =  _attrs.contiguous().float().to('cpu')
-                        dict_cp['voxel_coords'] =  _pred_indices.int().to('cpu')[topN.to('cpu')]
-                        
-                        with open(os.path.join(self.path_log, f'syn{idx_datum}.pickle'), 'wb') as file:
+                        dict_cp = copy.deepcopy(dict_datum)
+                        for key, val in dict_datum.items():
+                            if hasattr(val, 'device'):
+                                dict_cp[key] = val.to('cpu')
+                        with open(os.path.join(self.path_log, f'gt{idx_datum}.pickle'), 'wb') as file:
                             pickle.dump(dict_cp, file)
+                
+                    if self.model_cfg == 'ldr':
+                        if random.random() < 1:
+                            if _attrs.shape[0] < self.Nvoxels:
+                                dict_datum['voxels'] = _attrs.contiguous().float().to(d)
+                                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
+                                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
+                                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
+                                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                                dict_datum['voxel_num_points'] = voxel_num_points
+                            else:
+                                _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                                dict_datum['voxels'] = _attrs.contiguous().float().to(d)[topN]
+                                dict_datum['voxel_coords'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
+                                dict_datum['voxel_coords'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
+                                dict_datum['voxel_coords'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
+                                dict_datum['voxel_coords'] = dict_datum['voxel_coords'].to(d)
+                                dict_datum['voxel_num_points'] = voxel_num_points[topN]
+
+
+                        if save_res:
+                            
+                            dict_cp = dict()
+                            dict_cp['voxels'] =  _attrs.contiguous().float().to('cpu')
+                            dict_cp['voxel_coords'] =  _pred_indices.int().to('cpu')[topN.to('cpu')]
+                            
+                            with open(os.path.join(self.path_log, f'syn{idx_datum}.pickle'), 'wb') as file:
+                                pickle.dump(dict_cp, file)
                         
                     
-                else:
-                    if _attrs.shape[0] < self.Nvoxels:
-                        dict_datum['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
-                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
-                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
-                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
-                        dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
                     else:
-                        _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
-                        dict_datum['sp_features'] =  _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
-                        dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
-                        dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
-                        dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
-                        dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
-            
+                        if _attrs.shape[0] < self.Nvoxels:
+                            dict_datum['sp_features'] = _attrs.contiguous().float().to(d).mean(dim=1, keepdim=False)
+                            dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)
+                            dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)
+                            dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)
+                            dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
+                        else:
+                            _, topN = torch.topk(_attrs[:, :, -1].mean(1), k=self.Nvoxels)
+                            dict_datum['sp_features'] =  _attrs.contiguous().float().to(d)[topN].mean(dim=1, keepdim=False)
+                            dict_datum['sp_indices'][:, 1] = _pred_indices[:, 1].int().clamp(1, self.spatial_size[0]-1)[topN]
+                            dict_datum['sp_indices'][:, 2] = _pred_indices[:, 2].int().clamp(1, self.spatial_size[1]-1)[topN]
+                            dict_datum['sp_indices'][:, 3] = _pred_indices[:, 3].int().clamp(1, self.spatial_size[2]-1)[topN]
+                            dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
+
+                else:
+                    attrs_pts, attrs_mu_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                                                                                        pred_st=out['st'],
+                                                                                        mu_off=out["mu_off"],
+                                                                                        log_sig_off=out["log_sig_off"],
+                                                                                        mix_logit=out["mix_logit"],
+                                                                                        mu_int=out["mu_int"],
+                                                                                        origin=self.origin,
+                                                                                        vsize_xyz=self.voxel_size,
+                                                                                        n_points_per_voxel=5,
+                                                                                        prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                                        sample_mode="mixture",  # or "top1" for deterministic
+                                                                                        clamp_intensity=(0.0, None),
+                                                                                    )
+
+                    dict_datum["voxels"] = attrs_pts.float()
+                    dict_datum["voxel_coords"] = voxel_coords
+                    dict_datum["voxel_num_points"] = voxel_num_points
+                    
             # print(f"------ dict_datum: {dict_datum['sp_features'].shape}")
             dict_out = self.dect_net(dict_datum)
 

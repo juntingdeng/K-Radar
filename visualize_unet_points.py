@@ -3,6 +3,7 @@
 from typing import Tuple, Optional
 import numpy as np
 from scipy.spatial import cKDTree
+from PIL import Image, ImageCms
 
 try:
     import torch
@@ -135,14 +136,13 @@ def make_o3d_box(x, y, z, th, l, w, h, color=[1, 0, 0]):
 def save_open3d_render_fixed_pose(points_xyz, intensities=None, boxes=None, filename="view.png",
                                   pose=None, width=1600, height=900,
                                   fov_deg=60.0, near=0.1, far=5000.0,
-                                  bg=(1,1,1,1), point_size=1.5):
+                                  bg=(1.0, 1.0, 1.0, 1.0), point_size=1.5):
     X = to_numpy(points_xyz, shape_last=3, dtype=np.float64)
     N = X.shape[0]
     C = _colors_from_intensity(intensities, N)
 
     if _HAS_O3D:
         rnd = o3d.visualization.rendering.OffscreenRenderer(width, height)
-        rnd.scene.set_background(bg)
 
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(np.ascontiguousarray(X.copy()))
@@ -153,6 +153,7 @@ def save_open3d_render_fixed_pose(points_xyz, intensities=None, boxes=None, file
         mat.point_size = float(point_size)
 
         rnd.scene.add_geometry("points", pcd, mat)
+        rnd.scene.set_background(bg)
 
         # ---- Bounding Boxes ----
         for i, box_vals in enumerate(boxes):
@@ -178,7 +179,16 @@ def save_open3d_render_fixed_pose(points_xyz, intensities=None, boxes=None, file
         )
 
         img = rnd.render_to_image()
-        o3d.io.write_image(filename, img)
+        # o3d.io.write_image(filename, img)
+        img = np.asarray(img)
+        img = img.astype(np.float32)
+        bg = img[0, 0].astype(np.float32)  # [235,235,235]
+
+        scale = 255.0 / bg                # per-channel scale
+        img_rescaled = img * scale
+        img_rescaled = np.clip(img_rescaled, 0, 255).astype(np.uint8)
+        Image.fromarray(img_rescaled).save(filename)
+        
         return filename
 
     # Fallback to matplotlib BEV
@@ -281,7 +291,16 @@ def save_open3d_render_offsets(points_xyz, points_gt, points_rdr, intensities, i
         )
 
         img = rnd.render_to_image()
-        o3d.io.write_image(filename, img)
+        # o3d.io.write_image(filename, img)
+        img = np.asarray(img)
+        img = img.astype(np.float32)
+        bg = img[0, 0].astype(np.float32)  # [235,235,235]
+
+        scale = 255.0 / bg                # per-channel scale
+        img_rescaled = img * scale
+        img_rescaled = np.clip(img_rescaled, 0, 255).astype(np.uint8)
+        Image.fromarray(img_rescaled).save(filename)
+
         return filename
 
     # Fallback to matplotlib BEV
@@ -537,8 +556,8 @@ def plot_mapping_error_cdf(
     if lidar_x.size > 0:
         ax.plot(lidar_x, lidar_y, label="LiDAR")
 
-    ax.set_xlabel("Error ({})".format(unit))
-    ax.set_ylabel("CDF")
+    ax.set_xlabel("Error ({})".format(unit), fontsize=16)
+    ax.set_ylabel("CDF", fontsize=16)
     ax.set_ylim([0, 1])
     ax.set_xlim([0, 8])
     ax.grid(True)
@@ -547,7 +566,8 @@ def plot_mapping_error_cdf(
 
     
     plt.tight_layout()
-    plt.savefig(save_path)
+    if save_path:
+        plt.savefig(save_path)
 
     return fig, ax, (radar_x, radar_y), (lidar_x, lidar_y)
 

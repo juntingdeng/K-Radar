@@ -26,7 +26,7 @@ from models.generatives.generative import *
 from dataset_utils.KDataset import *
 from torch.amp import GradScaler
 from pipelines.pipeline_dect import Validate
-# from models.generatives.unet_utlis import *
+from models.generatives.unet_utlis import *
 
 def arg_parser():
     args = argparse.ArgumentParser()
@@ -115,7 +115,7 @@ if __name__ == '__main__':
 
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0)
     scaler = GradScaler()
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg)
+    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn)
     ppl.set_validate()
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')

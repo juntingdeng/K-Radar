@@ -12,7 +12,7 @@ from models.generatives.unet import *
 
 from dataset_utils.KDataset import *
 from torch.amp import GradScaler
-from pipelines.pipeline_dect import Validate
+# from pipelines.pipeline_dect import Validate
 from visualize_unet_points import *
 from models.generatives.unet_utlis import *
 from models.generatives.generative import *
@@ -26,7 +26,7 @@ def arg_parser():
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--mdn', action='store_true')
-    args.add_argument('--plot_nframes', default=2, type=int)
+    args.add_argument('--plot_nframes', default=4, type=int)
     args.add_argument('--plot_all', action='store_true')
     args.add_argument('--newtest', default=None, type=str)
     return args.parse_args()
@@ -37,7 +37,7 @@ def save_open3d_render(points_xyz, intensities=None, boxes_kitti=None,
     Render the synthesized LiDAR point cloud + boxes to an image file.
     Works headlessly (no window).
     """
-    print(f'Here: {type(points_xyz)}')
+    # print(f'Here: {type(points_xyz)}')
     scene = o3d.visualization.rendering.OffscreenRenderer(w, h)
     scene.scene.set_background([1, 1, 1, 1])  # white background
 
@@ -134,17 +134,18 @@ if __name__ == '__main__':
     gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
     dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
 
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
-    ppl.set_validate()
+    # ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size])
+    # ppl.set_validate()
 
     gen_net = gen_net.to(d)
     dl = test_dataloader if args.set == 'test' else train_dataloader
     x_min_all, x_max_all = float('inf'), 0
     radar_error_all, lidar_err_all = [], []
     for bi, batch_dict in enumerate(dl):
-        print(f'here{bi}')
+        if bi >100:
+            # print(f'finished {bi}')
+            break
         if not args.plot_all and bi >= args.plot_nframes: break
-        print(bi)
         batch_dict = rdr_processor.forward(batch_dict)
         batch_dict = ldr_processor.forward(batch_dict)
 
@@ -294,7 +295,7 @@ if __name__ == '__main__':
         pose = compute_reference_pose(ldr_points_xyz, view="bev")
 
         # Save all with the SAME pose
-        fig_path = os.path.join('visualize', log_sig, load_epoch)
+        fig_path = os.path.join('visualize_noeval', log_sig, load_epoch)
         os.makedirs(fig_path, exist_ok=True)
         # print(f'image save path: {fig_path}')
         list_tuple_objs = batch_dict['meta'][0]['label']
@@ -317,7 +318,7 @@ if __name__ == '__main__':
         # randinx = random.sample(range(0, points_xyz.shape[0]), k=10000)
         # _, randinx = torch.topk(_attrs[:, :, -1].mean(1), k=10000)
         # plot_quiver(pts_pred=rdr_points_xyz, off_pred=pred_offset_m.detach().cpu().numpy().reshape(-1, 3), name=os.path.join(fig_path, f"{set}_{bi}_offset_quiver.png"))
-        if bi < args.plot_nframes:
+        if not args.plot_all and bi < args.plot_nframes:
             prefix = f"{set}_{bi}" if not args.newtest else f"{set}_new{args.newtest}_{bi}"
             print(f'/////// prefix:{prefix}')
             save_open3d_render_offsets(points_xyz=points_xyz, 
@@ -329,11 +330,12 @@ if __name__ == '__main__':
                                         boxes=gt_boxes,
                                         filename=os.path.join(fig_path, f"{prefix}_offset.png"), 
                                         pose=pose)
-            save_open3d_render_fixed_pose(points_xyz=points_xyz_sp, 
-                                        intensities=intensity, 
-                                        boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"{prefix}_pred1.png"), 
-                                        pose=pose)
+            if args.mdn:
+                save_open3d_render_fixed_pose(points_xyz=points_xyz_sp, 
+                                            intensities=intensity, 
+                                            boxes=gt_boxes,
+                                            filename=os.path.join(fig_path, f"{prefix}_pred1.png"), 
+                                            pose=pose)
             save_open3d_render_fixed_pose(points_xyz=pred_xyz, 
                                         intensities=intensity, 
                                         boxes=gt_boxes,
@@ -359,16 +361,22 @@ if __name__ == '__main__':
 
         # radar_pts: (Nr, 3), lidar_pts: (Nl, 3), pred_pts_union: (Np, 3)
         bin_x, radar_err, lidar_err, radar_cnt, lidar_cnt, _x_min, _x_max = modality_error_vs_range_numpy_with_zero(
-            rdr_points_xyz, ldr_points_xyz, points_xyz_sp, num_bins=700
+            rdr_points_xyz, ldr_points_xyz, points_xyz_sp if args.mdn else points_xyz, num_bins=700
         )
-        if bi< args.plot_nframes:
-            plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"{prefix}_error_cdf.png"))
-
-        x_min_all, x_max_all = min(x_min_all, _x_min), max(x_max_all, x_max)
         radar_error_all.append(radar_err)
         lidar_err_all.append(lidar_err)
+        x_min_all, x_max_all = min(x_min_all, _x_min), max(x_max_all, x_max)
 
-    # plot_mapping_error_cdf(radar_dists=np.stack(radar_error_all).reshape(-1), lidar_dists=np.stack(lidar_err_all).reshape(-1), unit='m', save_path=os.path.join(fig_path, f"{set}_all_error_cdf.png"))
+        if not args.plot_all and bi< args.plot_nframes:
+            fig, ax, (radar_x, radar_y), (lidar_x, lidar_y) = plot_mapping_error_cdf(radar_dists=radar_err, lidar_dists=lidar_err, unit='m', save_path=os.path.join(fig_path, f"{prefix}_error_cdf.png"))
+            np.save(os.path.join(fig_path, f'radar_x_{prefix}.npy'), radar_x)
+            np.save(os.path.join(fig_path, f'radar_y_{prefix}.npy'), radar_y)
+            np.save(os.path.join(fig_path, f'lidar_x_{prefix}.npy'), lidar_x)
+            np.save(os.path.join(fig_path, f'lidar_y_{prefix}.npy'), lidar_y)
+
+    plot_mapping_error_cdf(radar_dists=np.stack(radar_error_all).reshape(-1), lidar_dists=np.stack(lidar_err_all).reshape(-1), unit='m', save_path=os.path.join(fig_path, f"{set}_all_error_cdf.png"))
+    np.save(os.path.join(fig_path, f'{set}_radar_error_all.npy'), radar_error_all)
+    np.save(os.path.join(fig_path, f'{set}_lidar_error_all.npy'), lidar_err_all)
 
         # # Plot
         # plt.figure()
