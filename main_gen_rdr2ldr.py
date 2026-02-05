@@ -82,11 +82,11 @@ if __name__ == '__main__':
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
     train_dataloader = DataLoader(train_kdataset, batch_size=bs, 
-                                  collate_fn=train_kdataset.collate_fn, num_workers=4, shuffle=True)
+                                  collate_fn=train_kdataset.collate_fn, num_workers=2, shuffle=True)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
     test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
-                            collate_fn=test_kdataset.collate_fn, num_workers=4, shuffle=False)
+                            collate_fn=test_kdataset.collate_fn, num_workers=2, shuffle=False)
 
     rdr_processor = RadarSparseProcessor(cfg)
     ldr_processor = LdrPreprocessor(cfg)
@@ -329,6 +329,7 @@ if __name__ == '__main__':
                     # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
                     dect_opt.step()
                     gen_opt.step()
+                    scheduler.step()
                 else:
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen
@@ -348,7 +349,7 @@ if __name__ == '__main__':
                 for temp_key in batch_dict.keys():
                     batch_dict[temp_key] = None
 
-            scheduler.step()
+            
             # scheduler_gen.step()
 
             if args.gen_enable:
