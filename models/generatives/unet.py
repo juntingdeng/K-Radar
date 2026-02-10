@@ -274,9 +274,10 @@ def local_match_closest(radar: SparseConvTensor, lidar: SparseConvTensor, gt_top
         # offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:]).to(radar.features.dtype)  # [Nb_radar, 3]
         offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1).repeat(1, topk, 1)).to(radar.features.dtype)  # [Nb_radar, 3]
         gt_offsets[r_inds_b] = offs
+        gt_coords = l_idx[l_rows, 1:]
 
     # return matched_mask, gt_offsets, gt_feat
-    return matched_mask.unsqueeze(1).repeat(1, topk).reshape(-1), gt_offsets.reshape(-1, 3), gt_feat.reshape(-1, 20)
+    return matched_mask.unsqueeze(1).repeat(1, topk).reshape(-1), gt_offsets.reshape(-1, 3), gt_feat.reshape(-1, 20), gt_coords
 
 import torch.nn.functional as F
 import torch.nn as nn

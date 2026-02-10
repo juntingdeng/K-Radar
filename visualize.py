@@ -21,7 +21,7 @@ def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--log_sig', type=str, default='251218_214707')
     args.add_argument('--load_epoch', type=str, default='150')
-    args.add_argument('--set', type=str, default='test')
+    args.add_argument('--set', type=str, default='train')
     args.add_argument('--thresh', type=float, default=0.9)
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--gt_topk', default=100, type=int)
@@ -138,13 +138,16 @@ if __name__ == '__main__':
     # ppl.set_validate()
 
     gen_net = gen_net.to(d)
+    # gen_net.eval()
     dl = test_dataloader if args.set == 'test' else train_dataloader
     x_min_all, x_max_all = float('inf'), 0
     radar_error_all, lidar_err_all = [], []
     for bi, batch_dict in enumerate(dl):
-        if bi >100:
+        if bi >0:
             # print(f'finished {bi}')
             break
+
+        # print(f'idx:{batch_dict}, dict_datum:{batch_dict}')
         if not args.plot_all and bi >= args.plot_nframes: break
         batch_dict = rdr_processor.forward(batch_dict)
         batch_dict = ldr_processor.forward(batch_dict)
@@ -199,12 +202,12 @@ if __name__ == '__main__':
         union_st = scatter_radar_to_union(radar_st, all_idx, [z_size, y_size, x_size], bs)
 
         #gt_d: zyx
-        matched, gt_d, gt_f = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
+        matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         # print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
 
         out = gen_net(radar_st)
-
+        # print(f'out:{out}, radar_st.features:{radar_st.features}, radar_st.indices:{radar_st.indices}')
         prob_thresh=0.9
         if not args.mdn:
             pred, occ, attrs = out['st'], out['logits'], out['attrs']
@@ -243,7 +246,7 @@ if __name__ == '__main__':
         
         else:
             offs, occ = out['mu_off'], out['occ_logit']
-            attrs_pts, attrs_mu_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+            attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
                                                                 log_sig_off=out["log_sig_off"],
@@ -252,25 +255,29 @@ if __name__ == '__main__':
                                                                 origin=origin,
                                                                 vsize_xyz=vsize_xyz,
                                                                 n_points_per_voxel=5,
-                                                                prob_thresh=0.7,       # tune: 0.0 ~ 0.2
-                                                                sample_mode="top1",  # ['top1', 'mixture']
+                                                                prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                sample_mode="mixture",  # or "top1" for deterministic
                                                                 clamp_intensity=(0.0, None),
                                                             )
-            points_xyz = attrs_mu_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
-            intensity = attrs_mu_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
+            points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
+            intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
+
             points_xyz = np.ascontiguousarray(points_xyz)
             intensity = np.ascontiguousarray(intensity)
-
-            points_xyz_sp = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
-            points_xyz_sp = np.ascontiguousarray(points_xyz_sp)
 
         # plot gt
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
         attrs_gt = gt_f.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
-        points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
-        intensity_gt = attrs_gt[:,:, -1].reshape(-1)
+        # points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
+        # intensity_gt = attrs_gt[:,:, -1].reshape(-1)
+
+        points_xyz_gt = batch_dict['voxels'][:, :, :3].reshape(-1, 3).detach().cpu().numpy()
+        intensity_gt = batch_dict['voxels'][:, :, -1].reshape(-1).detach().cpu().numpy()
+        print(f"batch_dict['voxels']: {batch_dict['voxels'][0]}, attrs_gt:{attrs_gt[0]}")
+        print(f"batch_dict['voxel_coords']: {batch_dict['voxel_coords'][0]}, voxel_coords:{gt_coords[0]}")
+        print(f"batch_dict['voxel_num_points']: {batch_dict['voxel_num_points'][0]}, voxel_num_points:{voxel_num_points[0]}")
 
         points_xyz_gt = np.ascontiguousarray(points_xyz_gt)
         intensity_gt = np.ascontiguousarray(intensity_gt)
@@ -285,7 +292,7 @@ if __name__ == '__main__':
             prob_thresh=prob_thresh,
             clamp_offsets=False
         )
-
+        # print(f'points_xyz:{points_xyz}, intensity:{intensity}')
         rdr_points_xyz=np.ascontiguousarray(batch_dict['sp_features'][:, :, :3].detach().cpu().numpy().reshape(-1, 3)) 
         rdr_intensities=np.ascontiguousarray(batch_dict['sp_features'][:, :, -1].detach().cpu().numpy().reshape(-1)) 
         ldr_points_xyz=np.ascontiguousarray(batch_dict['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
@@ -295,7 +302,7 @@ if __name__ == '__main__':
         pose = compute_reference_pose(ldr_points_xyz, view="bev")
 
         # Save all with the SAME pose
-        fig_path = os.path.join('visualize_noeval', log_sig, load_epoch)
+        fig_path = os.path.join('visualize', log_sig, load_epoch)
         os.makedirs(fig_path, exist_ok=True)
         # print(f'image save path: {fig_path}')
         list_tuple_objs = batch_dict['meta'][0]['label']
@@ -331,7 +338,7 @@ if __name__ == '__main__':
                                         filename=os.path.join(fig_path, f"{prefix}_offset.png"), 
                                         pose=pose)
             if args.mdn:
-                save_open3d_render_fixed_pose(points_xyz=points_xyz_sp, 
+                save_open3d_render_fixed_pose(points_xyz=points_xyz, 
                                             intensities=intensity, 
                                             boxes=gt_boxes,
                                             filename=os.path.join(fig_path, f"{prefix}_pred1.png"), 
@@ -352,7 +359,7 @@ if __name__ == '__main__':
                                         filename=os.path.join(fig_path, f"{prefix}_ldr.png"),  
                                         pose=pose)
             
-            save_open3d_render_fixed_pose(points_xyz=attrs_gt[:,:,:3].reshape(-1, 3), 
+            save_open3d_render_fixed_pose(points_xyz=points_xyz_gt, 
                                         intensities=intensity_gt, 
                                         boxes=gt_boxes,
                                         filename=os.path.join(fig_path, f"{prefix}_gt.png"), 
@@ -361,7 +368,7 @@ if __name__ == '__main__':
 
         # radar_pts: (Nr, 3), lidar_pts: (Nl, 3), pred_pts_union: (Np, 3)
         bin_x, radar_err, lidar_err, radar_cnt, lidar_cnt, _x_min, _x_max = modality_error_vs_range_numpy_with_zero(
-            rdr_points_xyz, ldr_points_xyz, points_xyz_sp if args.mdn else points_xyz, num_bins=700
+            rdr_points_xyz, ldr_points_xyz, points_xyz, num_bins=700
         )
         radar_error_all.append(radar_err)
         lidar_err_all.append(lidar_err)

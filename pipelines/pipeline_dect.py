@@ -128,8 +128,8 @@ class Validate:
 
     def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False, data_loader=None, save_res = False):
         # self.network.eval()
-        if self.gen_net:
-            self.gen_net.eval()
+        # if self.gen_net:
+            # self.gen_net.eval()
         self.dect_net.training=False
         self.dect_net.eval()
 
@@ -265,11 +265,12 @@ class Validate:
             if is_subset:
                 if (idx_datum >= self.val_num_subset):
                     break
-
+            # if idx_datum > 20:
+            #     break
+            # print(f'idx:{idx_datum}, dict_datum:{dict_datum}')
             # try:
             # dict_out = self.network(dict_datum) # inference
             # is_feature_inferenced = True
-
             is_feature_inferenced = True
 
             dict_datum = self.rdr_processor.forward(dict_datum)
@@ -281,7 +282,6 @@ class Validate:
                         dict_datum[key] = torch.tensor(val).to(device)
                     elif isinstance(val, torch.Tensor) and val.device != device:
                         dict_datum[key] = dict_datum[key].to(device)
-
                 
                 
             if self.gen_net:
@@ -290,10 +290,10 @@ class Validate:
                     n = rdr_data.shape[0]
                     while n < self.Nvoxels:
                         rdr_data = torch.vstack([rdr_data, rdr_data[: self.Nvoxels - n]])
-                        dict_datum['sp_features'] = rdr_data
                         #bzyx
                         dict_datum['sp_indices'] = torch.vstack([dict_datum['sp_indices'], dict_datum['sp_indices'][: self.Nvoxels- n]])
                         n = rdr_data.shape[0]
+                    dict_datum['sp_features'] = rdr_data
                                     
             ldr_data = dict_datum['voxels']
             lmin, lmax = ldr_data.min(), ldr_data.max()
@@ -323,14 +323,15 @@ class Validate:
                 rad_idx = radar_st.indices           # [Nr,4]
                 lid_idx = lidar_st.indices           # [Nl,4]
                 
-
                 all_idx = torch.cat([rad_idx, lid_idx], dim=0)
                 all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
                 union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
 
                 out = self.gen_net(radar_st) 
+                # print(f'out:{out}, radar_st.features:{radar_st.features}, radar_st.indices:{radar_st.indices}')
                 # print(f"/////////////indices shape: {rad_idx.shape}, {lid_idx.shape}, {union_st.indices.shape}, {out['st'].indices.shape}")
 
+                # print(f'MDN:{self.mdn}')
                 if not self.mdn:
                     # pred, occ, attrs = out['st'], out['logits'], out['attrs']
                     # offs = attrs[:, :, :3]
@@ -356,46 +357,6 @@ class Validate:
                     keep = keep.repeat(1,1,4) 
                     # _attrs = _attrs[keep][:, None, :]
                     _attrs = torch.where(keep, _attrs, torch.zeros_like(_attrs))
-
-                    vis = False
-                    if vis:
-                        points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
-                        intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
-
-                        points_xyz = np.ascontiguousarray(points_xyz)
-                        intensity = np.ascontiguousarray(intensity)
-                        print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
-
-                        ldr_points_xyz=np.ascontiguousarray(dict_datum['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
-                        ldr_intensities=np.ascontiguousarray(dict_datum['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
-
-                        # Pick a shared camera pose (e.g., from LiDAR cloud)
-                        pose = compute_reference_pose(ldr_points_xyz, view="bev")
-
-                        # Save all with the SAME pose
-                        fig_path = os.path.join('visualize', 'test')
-                        os.makedirs(fig_path, exist_ok=True)
-                        list_tuple_objs = dict_datum['meta'][0]['label']
-                        dx, dy, dz = dict_datum['meta'][0]['calib']
-                        gt_boxes = []
-                        for obj in list_tuple_objs:
-                            cls_name, (x, y, z, th, l, w, h), trk, avail = obj
-                            x = x + dx
-                            y = y + dy
-                            z = z + dz
-                            print(f'dx, dy, dz: {dx}, {dy}, {dz}')
-                            gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
-
-                        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
-                                                    intensities=intensity, 
-                                                    boxes=gt_boxes,
-                                                    filename=os.path.join(fig_path, f"pred1_test_{idx_datum}.png"), 
-                                                    pose=pose)
-                        save_open3d_render_fixed_pose(ldr_points_xyz, 
-                                        intensities=ldr_intensities, 
-                                        boxes=gt_boxes,
-                                        filename=os.path.join(fig_path, f"ldr_test_{idx_datum}.png"),  
-                                        pose=pose)
                         
                     # keep = torch.any(keep, dim=1, keepdim=False)
                     # print(f'keep: {keep.shape}')
@@ -436,7 +397,6 @@ class Validate:
                             
                             with open(os.path.join(self.path_log, f'syn{idx_datum}.pickle'), 'wb') as file:
                                 pickle.dump(dict_cp, file)
-                        
                     
                     else:
                         if _attrs.shape[0] < self.Nvoxels:
@@ -454,7 +414,8 @@ class Validate:
                             dict_datum['sp_indices'] = dict_datum['sp_indices'].to(d)
 
                 else:
-                    attrs_pts, attrs_mu_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                    offs, occ = out['mu_off'], out['occ_logit']
+                    attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
                                                                                         log_sig_off=out["log_sig_off"],
@@ -467,11 +428,67 @@ class Validate:
                                                                                         sample_mode="mixture",  # or "top1" for deterministic
                                                                                         clamp_intensity=(0.0, None),
                                                                                     )
+                    prob_thresh=0.9
+                    pred_xyz = unet_slots_to_xyz_attrs(
+                        out,                       # your dict
+                        offs,
+                        occ,
+                        voxel_size=[0.05, 0.05, 0.1],   # <-- set to your grid
+                        origin=self.origin,       # <-- set to your grid origin
+                        prob_thresh=prob_thresh,
+                        clamp_offsets=False
+                        )
+                    
+                    points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
+                    intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
+                    points_xyz = np.ascontiguousarray(points_xyz)
+                    intensity = np.ascontiguousarray(intensity)
+                    # print(f'points_xyz:{points_xyz}, intensity:{intensity}')
 
                     dict_datum["voxels"] = attrs_pts.float()
                     dict_datum["voxel_coords"] = voxel_coords
                     dict_datum["voxel_num_points"] = voxel_num_points
-                    
+
+                    vis = False
+                    if vis:
+                        # points_xyz = _attrs[:,:, :3].detach().cpu().numpy().reshape(-1, 3)
+                        # intensity = _attrs[:,:, -1].detach().cpu().numpy().reshape(-1)
+
+                        # points_xyz = np.ascontiguousarray(points_xyz)
+                        # intensity = np.ascontiguousarray(intensity)
+                        # print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
+
+                        ldr_points_xyz=np.ascontiguousarray(dict_datum['voxels'][:, :, :3].detach().cpu().numpy().reshape(-1, 3))
+                        ldr_intensities=np.ascontiguousarray(dict_datum['voxels'][:, :, -1].detach().cpu().numpy().reshape(-1))
+
+                        # Pick a shared camera pose (e.g., from LiDAR cloud)
+                        pose = compute_reference_pose(ldr_points_xyz, view="bev")
+
+                        # Save all with the SAME pose
+                        fig_path = os.path.join('visualize', 'test')
+                        os.makedirs(fig_path, exist_ok=True)
+                        list_tuple_objs = dict_datum['meta'][0]['label']
+                        dx, dy, dz = dict_datum['meta'][0]['calib']
+                        gt_boxes = []
+                        for obj in list_tuple_objs:
+                            cls_name, (x, y, z, th, l, w, h), trk, avail = obj
+                            x = x + dx
+                            y = y + dy
+                            z = z + dz
+                            # print(f'dx, dy, dz: {dx}, {dy}, {dz}')
+                            gt_boxes.append([cls_name, (x, y, z, th, l, w, h), trk, avail])
+
+                        save_open3d_render_fixed_pose(points_xyz=points_xyz, 
+                                                    intensities=intensity, 
+                                                    boxes=gt_boxes,
+                                                    filename=os.path.join(fig_path, f"pred1_test_{idx_datum}.png"), 
+                                                    pose=pose)
+                        save_open3d_render_fixed_pose(ldr_points_xyz, 
+                                        intensities=ldr_intensities, 
+                                        boxes=gt_boxes,
+                                        filename=os.path.join(fig_path, f"ldr_test_{idx_datum}.png"),  
+                                        pose=pose)
+                        
             # print(f"------ dict_datum: {dict_datum['sp_features'].shape}")
             dict_out = self.dect_net(dict_datum)
 

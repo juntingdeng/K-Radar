@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import box_utils
-from iou3d_nms import iou3d_nms_utils
+from ops.iou3d_nms import iou3d_nms_utils
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 class SigmoidFocalClassificationLoss(nn.Module):

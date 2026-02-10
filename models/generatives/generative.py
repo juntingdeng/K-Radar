@@ -51,8 +51,9 @@ def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt
 
         offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1)).to(radar.features.dtype)  # (Nb_r, topk, 3)
         gt_offsets[r_inds_b] = offs
+        gt_coords = l_idx[l_rows, :]
 
-    return matched_mask, gt_offsets, gt_feat
+    return matched_mask, gt_offsets, gt_feat, gt_coords.reshape(-1, 4)
 
 
 import torch
@@ -161,13 +162,12 @@ import torch.nn.functional as F
 import numpy as np
 
 class SynthLocalLoss_MDN(nn.Module):
-    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, gt_topk=10, tau_targets=0.3):
+    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, gt_topk=10):
         super().__init__()
         self.w_occ = w_occ
         self.w_mdn = w_mdn
         self.w_int = w_int
         self.gt_topk = gt_topk
-        self.tau_targets = tau_targets
         self.bce = nn.BCEWithLogitsLoss()
 
     @staticmethod
@@ -196,7 +196,8 @@ class SynthLocalLoss_MDN(nn.Module):
         logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * log_sigma_ + log2pi).sum(dim=-1)  # (M,T,K)
 
         log_mix = logN + log_pi.unsqueeze(1)          # (M,T,K)
-        return log_mix
+        logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
+        return logp
 
     def forward(self, out_dict, radar_st: SparseConvTensor, lidar_st: SparseConvTensor):
         """
@@ -228,21 +229,8 @@ class SynthLocalLoss_MDN(nn.Module):
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
-            dist_t = torch.norm(y_m, dim=-1)           # (M,T)
-            beta = 1.0   # distance scale (tune: ~1–3 voxels or meters)
-            w_t = torch.softmax(-dist_t / beta, dim=1)             # (M,T)
-            # normalize weights for numerical stability
-            w_t = w_t / (w_t.sum(dim=1, keepdim=True) + 1e-12)
-
-            log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T,K)
-            logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
-            # mdn_nll = -(logp.mean())                             # scalar
-            # soft-min over targets:
-            tau = float(self.tau_targets)
-            # ---- soft-min with distance weighting ----
-            weighted_logp = logp / tau + torch.log(w_t + 1e-12)
-            mdn_nll_per = -tau * torch.logsumexp(weighted_logp, dim=1)  # (M,)
-            mdn_nll = mdn_nll_per.mean()
+            logp = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
+            mdn_nll = -(logp.mean())                             # scalar
 
             # ---------- Optional: intensity loss weighted by responsibilities ----------
             # Your gt_feat is (N,topk,C). In your earlier code C=20=5*4 (x,y,z,i) in meters.
@@ -250,35 +238,34 @@ class SynthLocalLoss_MDN(nn.Module):
             int_loss = torch.tensor(0.0, device=mu_off.device)
             if self.w_int > 0 and gt_feat.shape[-1] % 4 == 0:
                 C = gt_feat.shape[-1]
+                gt_pts = gt_feat.view(gt_feat.shape[0], gt_feat.shape[1], C // 4, 4)  # (N,T,P,4)
+                gt_int = gt_pts[..., 3].mean(dim=2)                                   # (N,T)
+                gt_int_m = gt_int[matched_mask]                                       # (M,T)
 
-                alpha = torch.softmax(logp / tau, dim=1)  # (M,T)
-                # responsibilities over K for each (t): r_{t,k} = softmax_k(log_mix)
-                r_tk = torch.softmax(log_mix, dim=-1)  # (M,T,K)
-                # aggregate responsibilities across targets using alpha
-                r = (alpha.unsqueeze(-1) * r_tk).sum(dim=1)  # (M,K)
+                # Responsibilities r_{t,k} ∝ pi_k N(y_t|...)
+                if ml_m.ndim == 3:
+                    ml_m2 = ml_m.squeeze(-1)  # (M,K)
+                else:
+                    ml_m2 = ml_m
 
-                # r = torch.softmax(log_mix, dim=-1)
-                # gt_pts = gt_feat.view(gt_feat.shape[0], gt_feat.shape[1], C // 4, 4)  # (N,T,P,4)
-                # gt_int = gt_pts[..., 3].mean(dim=2)                                   # (N,T)
-                # gt_int_m = gt_int[matched_mask]                                       # (M,T)
-                # gt_int_m = gt_int_m.unsqueeze(-1)                    # (M,T,1)
+                log_pi = F.log_softmax(ml_m2, dim=1)  # (M,K)
 
-                # pred_int_m = mu_int[matched_mask].squeeze(-1)          # (M,K)
-                # pred_int_m = pred_int_m.unsqueeze(1)                   # (M,1,K)
+                # compute component log probs (M,T,K)
+                y_  = y_m.unsqueeze(2)        # (M,T,1,3)
+                mu_ = mu_m.unsqueeze(1)       # (M,1,K,3)
+                ls_ = ls_m.unsqueeze(1)       # (M,1,K,3)
+                sigma2_ = torch.exp(2.0 * ls_) + 1e-12
 
-                # int_loss = (r * (pred_int_m - gt_int_m).abs()).mean()
+                log2pi = np.log(2.0 * np.pi)
+                logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * ls_ + log2pi).sum(dim=-1)  # (M,T,K)
+                log_post = logN + log_pi.unsqueeze(1)                                          # (M,T,K)
+                r = torch.softmax(log_post, dim=-1)                                            # (M,T,K)
 
-                P = C // 4
-                gt_pts = gt_feat[matched_mask].view(-1, self.gt_topk, P, 4)  # (M,T,P,4)
-                gt_int_t = gt_pts[..., 3].mean(dim=2)  # (M,T)
-                gt_int = (alpha * gt_int_t).sum(dim=1) # (M,)
+                pred_int_m = mu_int[matched_mask].squeeze(-1)          # (M,K)
+                pred_int_m = pred_int_m.unsqueeze(1)                   # (M,1,K)
+                gt_int_m   = gt_int_m.unsqueeze(-1)                    # (M,T,1)
 
-                pred_int = mu_int[matched_mask].squeeze(-1)  # (M,K)
-                pred_int_exp = (r * pred_int).sum(dim=1)     # (M,)
-                int_loss = (pred_int_exp - gt_int).abs().mean()
-            else:
-                # Fallback: skip if format isn't P*4
-                int_loss = torch.tensor(0.0, device=mu_m.device)
+                int_loss = (r * (pred_int_m - gt_int_m).abs()).mean()
 
         else:
             mdn_nll = mu_off.sum() * 0.0
@@ -352,17 +339,12 @@ def sample_points_from_mdn(
 
     xyz = voxel_center_xyz.unsqueeze(1) + sampled_off_m          # (N,P,3)
 
-    sampled_off_vox_mu = mu.unsqueeze(1)  # voxel units
-    sampled_off_m_mu = sampled_off_vox_mu * vsize_xyz.view(1, 1, 3)   # meters
-    xyz_mu = voxel_center_xyz.unsqueeze(1) + sampled_off_m_mu          # (N,P,3)
-
     # intensity per point
     if mu_int is None:
         inten = torch.zeros((N, P, 1), device=device, dtype=mu.dtype)
     else:
         inten_k = mu_int.squeeze(-1)[torch.arange(N, device=device), chosen_k]  # (N,)
         inten = inten_k.view(N, 1, 1).repeat(1, P, 1)                           # (N,P,1)
-        inten_mu = inten_k.view(N, 1, 1)
 
     # optional clamp
     if clamp_intensity is not None:
@@ -385,11 +367,8 @@ def sample_points_from_mdn(
     xyz = torch.where(keep.view(N, 1, 1), xyz, torch.zeros_like(xyz))
     inten = torch.where(keep.view(N, 1, 1), inten, torch.zeros_like(inten))
 
-    # attrs: Samples with +sigma lead to better CDF error but blurred visualization results. 
-    # attrs_mu: Samples without +sigma, i.e., only mu, to get cleaner visualization.
     attrs = torch.cat([xyz, inten], dim=-1)  # (N,P,4)
-    attrs_mu = torch.cat([xyz_mu, inten_mu], dim=-1)  # (N,1,4)
 
     voxel_coords = pred_st.indices.int()     # (N,4)
 
-    return attrs.contiguous(), attrs_mu.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen
+    return attrs.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen

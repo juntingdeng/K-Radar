@@ -474,7 +474,7 @@ def rotate_nms_gpu(dets, nms_overlap_thresh, device_id=0):
     return list(order[keep])
 
 
-@cuda.jit(fastmath=False)
+@cuda.jit('(int64, int64, float32[:], float32[:], float32[:])', fastmath=False)
 def rotate_iou_kernel(N, K, dev_boxes, dev_query_boxes, dev_iou):
     threadsPerBlock = 8 * 8
     row_start = cuda.blockIdx.x
@@ -545,7 +545,7 @@ def rotate_iou_gpu(boxes, query_boxes, device_id=0):
     return iou.astype(boxes.dtype)
 
 
-@cuda.jit(device=True, inline=True)
+@cuda.jit('(float32[:], float32[:], int32)', device=True, inline=True)
 def devRotateIoUEval(rbox1, rbox2, criterion=-1):
     area1 = rbox1[2] * rbox1[3]
     area2 = rbox2[2] * rbox2[3]
@@ -561,6 +561,7 @@ def devRotateIoUEval(rbox1, rbox2, criterion=-1):
 
 
 @cuda.jit(
+    '(int64, int64, float32[:], float32[:], float32[:], int32)',
     fastmath=False)
 def rotate_iou_kernel_eval(N,
                            K,
