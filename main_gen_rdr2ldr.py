@@ -290,7 +290,7 @@ if __name__ == '__main__':
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
                         loss_gen = gen_loss(out, radar_st, lidar_st)
-                        attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                        attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
                                                                                         log_sig_off=out["log_sig_off"],
@@ -303,7 +303,7 @@ if __name__ == '__main__':
                                                                                         sample_mode="mixture",  # or "top1" for deterministic
                                                                                         clamp_intensity=(0.0, None),
                                                                                     )
-
+                        voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
                         batch_dict["voxels"] = attrs_pts.float()
                         batch_dict["voxel_coords"] = voxel_coords
                         batch_dict["voxel_num_points"] = voxel_num_points

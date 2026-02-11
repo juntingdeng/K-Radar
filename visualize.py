@@ -26,7 +26,7 @@ def arg_parser():
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--mdn', action='store_true')
-    args.add_argument('--plot_nframes', default=4, type=int)
+    args.add_argument('--plot_nframes', default=1, type=int)
     args.add_argument('--plot_all', action='store_true')
     args.add_argument('--newtest', default=None, type=str)
     return args.parse_args()
@@ -162,7 +162,7 @@ if __name__ == '__main__':
         rdr_data = batch_dict['sp_features']
         ldr_data = batch_dict['voxels']
         lmin, lmax = ldr_data.min(), ldr_data.max()
-        
+        # print(f'rdr_data.shape[0]: {rdr_data.shape[0]}')
         if rdr_data.shape[0] < Nvoxels:
             n = rdr_data.shape[0]
             while n < Nvoxels:
@@ -206,6 +206,28 @@ if __name__ == '__main__':
         gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
         # print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
 
+        rdr_features = rdr_data[:, 0, :3]
+        ids = (rdr_features != 0).any(dim=1)      # boolean mask
+        rdr_features_nonzeros = rdr_features[ids]
+        # print(f'rdr_features_nonzeros: {rdr_features_nonzeros.shape}')
+        voxel_min_xyz = origin + (torch.flip(batch_dict['sp_indices'][ids, 1:4].float(), dims=[1]) + -1.) * vsize_xyz 
+        voxel_max_xyz = origin + (torch.flip(batch_dict['sp_indices'][ids, 1:4].float(), dims=[1]) + 1.) * vsize_xyz 
+        within = (rdr_features_nonzeros <= voxel_max_xyz) & (rdr_features >= voxel_min_xyz)
+        within_ = within.all(axis=1)
+        # print(f"Radar within: {within}, sum:{sum(within_)}, N points:{ids.shape[0]}")
+
+        # print(f'lidar data:{ldr_data}')
+        ldr_features = ldr_data[:, 0, :3]
+        ids = (ldr_features != 0).any(dim=1)      # boolean mask
+        ldr_features_nonzeros = ldr_features[ids]
+        # print(f'ldr_features_nonzeros: {ldr_features_nonzeros.shape}')
+        voxel_min_xyz = origin + (torch.flip(batch_dict['voxel_coords'][ids, 1:4].float(), dims=[1]) + 0.) * vsize_xyz 
+        voxel_max_xyz = origin + (torch.flip(batch_dict['voxel_coords'][ids, 1:4].float(), dims=[1]) + 1.) * vsize_xyz 
+        within = (ldr_features_nonzeros <= voxel_max_xyz) & (ldr_features_nonzeros >= voxel_min_xyz)
+        within_ = within.all(axis=1)
+        # print(f"Lidar within: {within}, sum:{sum(within_)}, N points:{ids.shape[0]}")
+
+        
         out = gen_net(radar_st)
         # print(f'out:{out}, radar_st.features:{radar_st.features}, radar_st.indices:{radar_st.indices}')
         prob_thresh=0.9
@@ -245,8 +267,8 @@ if __name__ == '__main__':
             # print(f'points:{points_xyz.shape}, intensity:{intensity.shape}')
         
         else:
-            offs, occ = out['mu_off'], out['occ_logit']
-            attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+            pred_st, offs, occ = out['st'], out['mu_off'], out['occ_logit']
+            attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
                                                                 log_sig_off=out["log_sig_off"],
@@ -259,6 +281,21 @@ if __name__ == '__main__':
                                                                 sample_mode="mixture",  # or "top1" for deterministic
                                                                 clamp_intensity=(0.0, None),
                                                             )
+            
+            ids = (attrs_pts[:, 0, :3] != 0).any(dim=1)      # boolean mask
+            features_nonzeros = attrs_pts[ids, 0, :3]
+            # print(f'features_nonzeros: {features_nonzeros.shape}')
+
+            # new_coords = mu[ids].int() + torch.flip(pred_st.indices[ids, 1:4], dims=[1]) #xyz
+            voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
+            voxel_min_xyz = origin + (torch.flip(voxel_coords[ids, 1:4], dims=[1]) + 0.) * vsize_xyz 
+            voxel_max_xyz = origin + (torch.flip(voxel_coords[ids, 1:4], dims=[1]) + 1.) * vsize_xyz 
+
+            within = (features_nonzeros <= voxel_max_xyz) & (features_nonzeros >= voxel_min_xyz)
+            within_any = within.any(axis=1)
+            within_all = within.all(axis=1)
+            # print(f"Prediced: within: {within}, sum-any:{sum(within_any)}, sum-all:{sum(within_all)}, N points:{features_nonzeros.shape[0]}")
+
             points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
             intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
 

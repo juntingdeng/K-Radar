@@ -172,6 +172,9 @@ class RadarSparseProcessor(nn.Module):
         self.min_roi = [x_min, y_min, z_min]
         self.grid_size = roi.grid_size
         self.input_dim = 4 #cfg.MODEL.PRE_PROCESSOR.INPUT_DIM
+        self.origin = torch.tensor([x_min, y_min, z_min])
+        self.vsize_xyz = roi.voxel_size
+        self.vsize_xyz = torch.tensor(self.vsize_xyz)
 
         # self.is_with_simplified_pointnet = cfg.MODEL.PRE_PROCESSOR.SIMPLIFIED_POINTNET.IS_WITH_SIMPLIFIED_POINTNET
         # if self.is_with_simplified_pointnet:
@@ -203,7 +206,7 @@ class RadarSparseProcessor(nn.Module):
         )
 
     def forward(self, dict_item):
-
+        self.vsize_xyz = self.vsize_xyz .to(self.device)
         rdr_sparse = dict_item['rdr_sparse'].to(self.device)
         batch_indices = dict_item['batch_indices_rdr_sparse'].to(self.device)
 

@@ -415,7 +415,7 @@ class Validate:
 
                 else:
                     offs, occ = out['mu_off'], out['occ_logit']
-                    attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk = sample_points_from_mdn(
+                    attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
                                                                                         log_sig_off=out["log_sig_off"],
@@ -443,11 +443,13 @@ class Validate:
                     intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
                     points_xyz = np.ascontiguousarray(points_xyz)
                     intensity = np.ascontiguousarray(intensity)
-                    # print(f'points_xyz:{points_xyz}, intensity:{intensity}')
+                    # print(f'attrs_pts:{attrs_pts}, radar_st:{radar_st.features}')
 
+                    voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
                     dict_datum["voxels"] = attrs_pts.float()
                     dict_datum["voxel_coords"] = voxel_coords
                     dict_datum["voxel_num_points"] = voxel_num_points
+                    # print(f"voxel_coords:{voxel_coords}, out['st']: {out['st'].indices}")
 
                     vis = False
                     if vis:

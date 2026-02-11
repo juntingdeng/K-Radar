@@ -210,8 +210,9 @@ class SynthLocalLoss_MDN(nn.Module):
         occ_logit   = out_dict["occ_logit"]     # (N,K,1)
         mix_logit   = out_dict["mix_logit"]     # (N,K,1)
 
-        matched_mask, gt_offsets_zyx, gt_feat = local_match_closest_mdn(radar_st, lidar_st, self.gt_topk)
+        matched_mask, gt_offsets_zyx, gt_feat, gt_coords = local_match_closest_mdn(radar_st, lidar_st, self.gt_topk)
         # matched_mask: (N,), gt_offsets: (N,topk,3) in zyx voxel units
+        # print(f"gt_offsets_zyx: {gt_offsets_zyx}")
 
         # Convert GT offsets to xyz if your mu_off is xyz
         gt_offsets_xyz = torch.flip(gt_offsets_zyx, dims=[-1])  # (N,topk,3) zyx->xyz
@@ -326,6 +327,7 @@ def sample_points_from_mdn(
     mu = mu_off[torch.arange(N, device=device), chosen_k]                # (N,3)
     sig = torch.exp(log_sig_off[torch.arange(N, device=device), chosen_k]).clamp_min(1e-3)  # (N,3)
 
+    # print(f'chosen: {chosen_k}, mu: {mu}, mu_off: {mu_off}')
     # base voxel centers in meters
     # pred_st.indices: [b,z,y,x]; we need xyz center
     # flip zyx -> xyz from indices[:,1:4]
@@ -334,10 +336,11 @@ def sample_points_from_mdn(
     # sample offsets in voxel units -> meters
     # sampled_off_vox: (N,P,3)
     eps = torch.randn((N, P, 3), device=device, dtype=mu.dtype)
-    sampled_off_vox = mu.unsqueeze(1) + sig.unsqueeze(1) * eps  # voxel units
+    sampled_off_vox = mu.unsqueeze(1) + sig.unsqueeze(1) * eps/10  # voxel units
     sampled_off_m = sampled_off_vox * vsize_xyz.view(1, 1, 3)   # meters
 
     xyz = voxel_center_xyz.unsqueeze(1) + sampled_off_m          # (N,P,3)
+    # print(f'xyz: {xyz.shape}')
 
     # intensity per point
     if mu_int is None:
@@ -371,4 +374,4 @@ def sample_points_from_mdn(
 
     voxel_coords = pred_st.indices.int()     # (N,4)
 
-    return attrs.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen
+    return attrs.contiguous(), voxel_coords, voxel_num_points, chosen_k, probs_chosen, mu
