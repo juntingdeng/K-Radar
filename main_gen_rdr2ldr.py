@@ -49,6 +49,8 @@ def arg_parser():
     args.add_argument('--gen_pretrained', action='store_true')
     args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
     args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
+    args.add_argument('--gen_pretrained_log_sig', type=str, default='260211_104838')
+    args.add_argument('--gen_pretrained_epoch', type=str, default=200)
     args.add_argument('--eps', type=float, default=0.5)
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--set', default='train', type=str)
@@ -100,6 +102,15 @@ if __name__ == '__main__':
             gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
             gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk)
         gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
+    
+        if args.gen_pretrained:
+            if not args.mdn:
+                gen_net = SparseUNet3D(in_ch=20).to(d)  
+            else:
+                gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
+            model_load_ldr = torch.load(f'./logs/exp_{args.gen_pretrained_log_sig}_RTNH/models/epoch{args.gen_pretrained_epoch}.pth')
+            gen_net.load_state_dict(state_dict=model_load_ldr['gen_state_dict'])
+
     else:
         gen_net = None
 
@@ -290,6 +301,9 @@ if __name__ == '__main__':
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
                         loss_gen = gen_loss(out, radar_st, lidar_st)
+                        matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
+                        # gt_d: zyx
+                        out['mu_off'] = torch.flip(gt_d, dims=[1])
                         attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
@@ -303,6 +317,7 @@ if __name__ == '__main__':
                                                                                         sample_mode="mixture",  # or "top1" for deterministic
                                                                                         clamp_intensity=(0.0, None),
                                                                                     )
+                                               
                         voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
                         batch_dict["voxels"] = attrs_pts.float()
                         batch_dict["voxel_coords"] = voxel_coords
@@ -320,13 +335,17 @@ if __name__ == '__main__':
                     running_loss_dect += loss_dect.detach().item()
                     # loss_total = loss_gen + 0.5 * (1.0 - np.cos(np.pi * (ei/n_epochs)))*loss_dect
                     
-                    loss_total = loss_gen + loss_dect
+                    loss_total = loss_dect if args.gen_stop_early and ei >= args.gen_stop else loss_gen + loss_dect
                     loss_total.backward()
                     # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
                     # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
-                    dect_opt.step()
-                    gen_opt.step()
-                    scheduler.step()
+                    if args.gen_stop_early and ei >= args.gen_stop:
+                        dect_opt.step()
+                        gen_opt.step()
+                        scheduler.step()
+                    else:
+                        dect_opt.step()
+                        scheduler.step()
                 else:
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen

@@ -268,6 +268,7 @@ if __name__ == '__main__':
         
         else:
             pred_st, offs, occ = out['st'], out['mu_off'], out['occ_logit']
+            # out['mu_off'] = torch.flip(gt_d, dims=[1])
             attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
@@ -281,10 +282,10 @@ if __name__ == '__main__':
                                                                 sample_mode="mixture",  # or "top1" for deterministic
                                                                 clamp_intensity=(0.0, None),
                                                             )
-            
+            print(f'rdr indices: {radar_st.indices}, pred indices: {pred_st.indices}')
             ids = (attrs_pts[:, 0, :3] != 0).any(dim=1)      # boolean mask
             features_nonzeros = attrs_pts[ids, 0, :3]
-            # print(f'features_nonzeros: {features_nonzeros.shape}')
+            print(f'features_nonzeros: {features_nonzeros.shape}')
 
             # new_coords = mu[ids].int() + torch.flip(pred_st.indices[ids, 1:4], dims=[1]) #xyz
             voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
@@ -294,7 +295,7 @@ if __name__ == '__main__':
             within = (features_nonzeros <= voxel_max_xyz) & (features_nonzeros >= voxel_min_xyz)
             within_any = within.any(axis=1)
             within_all = within.all(axis=1)
-            # print(f"Prediced: within: {within}, sum-any:{sum(within_any)}, sum-all:{sum(within_all)}, N points:{features_nonzeros.shape[0]}")
+            print(f"Prediced: within: {within}, sum-any:{sum(within_any)}, sum-all:{sum(within_all)}, N points:{features_nonzeros.shape[0]}")
 
             points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
             intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
@@ -307,14 +308,14 @@ if __name__ == '__main__':
         # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
         attrs_gt = gt_f.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
-        # points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
-        # intensity_gt = attrs_gt[:,:, -1].reshape(-1)
+        points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
+        intensity_gt = attrs_gt[:,:, -1].reshape(-1)
 
-        points_xyz_gt = batch_dict['voxels'][:, :, :3].reshape(-1, 3).detach().cpu().numpy()
-        intensity_gt = batch_dict['voxels'][:, :, -1].reshape(-1).detach().cpu().numpy()
-        print(f"batch_dict['voxels']: {batch_dict['voxels'][0]}, attrs_gt:{attrs_gt[0]}")
-        print(f"batch_dict['voxel_coords']: {batch_dict['voxel_coords'][0]}, voxel_coords:{gt_coords[0]}")
-        print(f"batch_dict['voxel_num_points']: {batch_dict['voxel_num_points'][0]}, voxel_num_points:{voxel_num_points[0]}")
+        # points_xyz_gt = batch_dict['voxels'][:, :, :3].reshape(-1, 3).detach().cpu().numpy()
+        # intensity_gt = batch_dict['voxels'][:, :, -1].reshape(-1).detach().cpu().numpy()
+        # print(f"batch_dict['voxels']: {batch_dict['voxels'][0]}, attrs_gt:{attrs_gt[0]}")
+        # print(f"batch_dict['voxel_coords']: {batch_dict['voxel_coords'][0]}, voxel_coords:{gt_coords[0]}")
+        # print(f"batch_dict['voxel_num_points']: {batch_dict['voxel_num_points'][0]}, voxel_num_points:{voxel_num_points[0]}")
 
         points_xyz_gt = np.ascontiguousarray(points_xyz_gt)
         intensity_gt = np.ascontiguousarray(intensity_gt)

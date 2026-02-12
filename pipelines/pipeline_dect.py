@@ -415,6 +415,9 @@ class Validate:
 
                 else:
                     offs, occ = out['mu_off'], out['occ_logit']
+                    matched, gt_d, gt_f, gt_coords = local_match_closest_mdn(radar_st, lidar_st, gt_topk=100)
+                        # gt_d: zyx
+                    out['mu_off'] = torch.flip(gt_d, dims=[1])
                     attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
