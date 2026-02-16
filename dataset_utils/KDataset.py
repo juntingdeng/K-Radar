@@ -102,7 +102,7 @@ class VoxelWrapper:
 class LdrPreprocessor:
     def __init__(self, cfg):
         self.dataset_cfg = cfg.DATASET
-        # self.model_cfg = cfg.MODEL
+        self.model_cfg = cfg.MODEL
         self.training = True
         self.split = 'train' if self.training else 'test'
 
@@ -114,7 +114,7 @@ class LdrPreprocessor:
             vsize_xyz=self.vsize_xyz,
             coors_range_xyz=self.coors_range_xyz,
             num_point_features=self.num_point_features,
-            max_num_points_per_voxel= 5 ,#self.model_cfg.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
+            max_num_points_per_voxel= self.model_cfg.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
             max_num_voxels=cfg.DATASET.max_num_voxels #self.model_cfg.PRE_PROCESSING.MAX_NUMBER_OF_VOXELS[self.split]
             )
         
@@ -201,7 +201,7 @@ class RadarSparseProcessor(nn.Module):
             coors_range_xyz = roi.xyz,
             num_point_features = self.input_dim,
             max_num_voxels = max_num_vox,
-            max_num_points_per_voxel = 5,
+            max_num_points_per_voxel = self.cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
             device= torch.device(self.device)
         )
 

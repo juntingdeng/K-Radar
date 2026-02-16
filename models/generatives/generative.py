@@ -49,6 +49,7 @@ def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt
         matched_mask[r_inds_b] = True
         gt_feat[r_inds_b] = lidar.features[l_rows]    # (Nb_r, topk, C)
 
+        # print(f"l_idx[l_rows, 1:]: {l_idx[l_rows, 1:]}, r_idx[r_inds_b, 1:]: {r_idx[r_inds_b, 1:]}")
         offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1)).to(radar.features.dtype)  # (Nb_r, topk, 3)
         gt_offsets[r_inds_b] = offs
         gt_coords = l_idx[l_rows, :]
@@ -230,8 +231,8 @@ class SynthLocalLoss_MDN(nn.Module):
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
-            logp = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
-            mdn_nll = -(logp.mean())                             # scalar
+            # logp = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
+            mdn_nll = ((y_m.unsqueeze(2) - mu_m.unsqueeze(1)) ** 2).mean() #-(logp.mean())                             # scalar
 
             # ---------- Optional: intensity loss weighted by responsibilities ----------
             # Your gt_feat is (N,topk,C). In your earlier code C=20=5*4 (x,y,z,i) in meters.

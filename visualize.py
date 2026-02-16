@@ -118,17 +118,17 @@ if __name__ == '__main__':
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
     train_dataloader = DataLoader(train_kdataset, batch_size=bs, 
-                                  collate_fn=train_kdataset.collate_fn, num_workers=4, shuffle=False)
+                                  collate_fn=train_kdataset.collate_fn, num_workers=0, shuffle=False)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
     test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
-                            collate_fn=test_kdataset.collate_fn, num_workers=4, shuffle=False)
+                            collate_fn=test_kdataset.collate_fn, num_workers=0, shuffle=False)
 
     rdr_processor = RadarSparseProcessor(cfg)
     ldr_processor = LdrPreprocessor(cfg)
 
     Nvoxels = cfg.DATASET.max_num_voxels
-    gen_net = SparseUNet3D(in_ch=20) if not args.mdn else SparseUNet3D_MDN(in_ch=20)
+    gen_net = SparseUNet3D(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL) if not args.mdn else SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL)
     dect_net = Rdr2LdrPvrcnnPP(cfg=cfg) if args.model_cfg == 'ldr' else RadarBase(cfg=cfg)
     model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{load_epoch}.pth')
     gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
@@ -162,7 +162,8 @@ if __name__ == '__main__':
         rdr_data = batch_dict['sp_features']
         ldr_data = batch_dict['voxels']
         lmin, lmax = ldr_data.min(), ldr_data.max()
-        # print(f'rdr_data.shape[0]: {rdr_data.shape[0]}')
+        print(f'rdr_data.shape[0]: {rdr_data.shape[0]}, rdr_data: {rdr_data}')
+        print(f'ldr_data.shape[0]: {ldr_data.shape[0]}, ldr_data: {ldr_data}')
         if rdr_data.shape[0] < Nvoxels:
             n = rdr_data.shape[0]
             while n < Nvoxels:
@@ -194,6 +195,13 @@ if __name__ == '__main__':
         
         # matched, gt_offsets, gt_features = local_match_new(radar_st, lidar_st)
         
+        rdr_is_all_zerocount = (rdr_data[:, 1:, :] == 0).all(dim=(1, 2)).sum()
+        ldr_is_all_zerocount = (ldr_data[:, 1:, :] == 0).all(dim=(1, 2)).sum()
+        print(f'rdr_is_all_zerocount: {rdr_is_all_zerocount}, ldr_is_all_zerocount:{ldr_is_all_zerocount}')
+        rdr_cnt = (rdr_data.abs().sum(dim=2) == 0).sum(dim=1)
+        ldr_cnt = (ldr_data.abs().sum(dim=2) == 0).sum(dim=1)
+        print(f'rdr_cnt: {rdr_cnt.sum()/rdr_cnt.shape[0]}, ldr_cnt: {ldr_cnt.sum()/ldr_cnt.shape[0]}')
+
         rad_idx = radar_st.indices           # [Nr,4]
         lid_idx = lidar_st.indices           # [Nl,4]
 
@@ -203,8 +211,8 @@ if __name__ == '__main__':
 
         #gt_d: zyx
         matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
-        gt_d = torch.flip(gt_d, dims=[1]) #gt_d: zyx -> xyz
-        # print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
+        gt_d_xyz = torch.flip(gt_d, dims=[-1]) #gt_d: zyx -> xyz
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
 
         rdr_features = rdr_data[:, 0, :3]
         ids = (rdr_features != 0).any(dim=1)      # boolean mask
@@ -268,7 +276,9 @@ if __name__ == '__main__':
         
         else:
             pred_st, offs, occ = out['st'], out['mu_off'], out['occ_logit']
-            # out['mu_off'] = torch.flip(gt_d, dims=[1])
+            # out['mu_off'] = gt_d_xyz
+            print(f"out['mu_off']: {out['mu_off']}, gt_d_xyz: {gt_d_xyz}")
+            print(f"out['mu_off']- gt_d: {(out['mu_off'].mean(dim=1) - gt_d_xyz.mean(dim=1))}")
             attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
@@ -277,7 +287,21 @@ if __name__ == '__main__':
                                                                 mu_int=out["mu_int"],
                                                                 origin=origin,
                                                                 vsize_xyz=vsize_xyz,
-                                                                n_points_per_voxel=5,
+                                                                n_points_per_voxel=cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
+                                                                prob_thresh=0.05,       # tune: 0.0 ~ 0.2
+                                                                sample_mode="mixture",  # or "top1" for deterministic
+                                                                clamp_intensity=(0.0, None),
+                                                            )
+            
+            attrs_pts_gt, voxel_coords_gt, voxel_num_points_gt, _, _, _ = sample_points_from_mdn(
+                                                                pred_st=out['st'],
+                                                                mu_off=gt_d_xyz,
+                                                                log_sig_off=out["log_sig_off"],
+                                                                mix_logit=out["mix_logit"],
+                                                                mu_int=out["mu_int"],
+                                                                origin=origin,
+                                                                vsize_xyz=vsize_xyz,
+                                                                n_points_per_voxel=cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
                                                                 prob_thresh=0.05,       # tune: 0.0 ~ 0.2
                                                                 sample_mode="mixture",  # or "top1" for deterministic
                                                                 clamp_intensity=(0.0, None),
@@ -306,7 +330,7 @@ if __name__ == '__main__':
         # plot gt
         gt_f = gt_f.view(gt_f.shape[0], -1, 4)
         # print(voxel_center_xyz_gt.shape, offset_m_gt.shape, gt_f.shape)
-        attrs_gt = gt_f.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
+        attrs_gt = attrs_pts_gt.detach().cpu().numpy() #torch.cat([voxel_center_xyz_gt + offset_m_gt, gt_f[:, :, 3:4]], dim=-1).detach().cpu().numpy()
 
         points_xyz_gt = attrs_gt[:,:, :3].reshape(-1, 3)
         intensity_gt = attrs_gt[:,:, -1].reshape(-1)
@@ -325,7 +349,7 @@ if __name__ == '__main__':
             out,                       # your dict
             offs,
             occ,
-            voxel_size=[0.05, 0.05, 0.1],   # <-- set to your grid
+            voxel_size=cfg.DATASET.roi.voxel_size,   # <-- set to your grid
             origin=origin,       # <-- set to your grid origin
             prob_thresh=prob_thresh,
             clamp_offsets=False

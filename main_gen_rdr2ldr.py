@@ -96,10 +96,10 @@ if __name__ == '__main__':
     Nvoxels = cfg.DATASET.max_num_voxels
     if args.gen_enable:
         if not args.mdn:
-            gen_net = SparseUNet3D(in_ch=20).to(d)  
+            gen_net = SparseUNet3D(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL).to(d)  
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
-            gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
+            gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL).to(d)
             gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk)
         gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
     
@@ -301,9 +301,10 @@ if __name__ == '__main__':
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
                         loss_gen = gen_loss(out, radar_st, lidar_st)
-                        matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
-                        # gt_d: zyx
-                        out['mu_off'] = torch.flip(gt_d, dims=[1])
+                        # matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
+                        # # gt_d: zyx
+                        # out['mu_off'] = torch.flip(gt_d, dims=[-1])
+                        # # print(f"out['mu_off']: {out['mu_off']}")
                         attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
@@ -312,7 +313,7 @@ if __name__ == '__main__':
                                                                                         mu_int=out["mu_int"],
                                                                                         origin=origin,
                                                                                         vsize_xyz=vsize_xyz,
-                                                                                        n_points_per_voxel=5,
+                                                                                        n_points_per_voxel=cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL,
                                                                                         prob_thresh=0.05,       # tune: 0.0 ~ 0.2
                                                                                         sample_mode="mixture",  # or "top1" for deterministic
                                                                                         clamp_intensity=(0.0, None),

@@ -73,6 +73,11 @@ class Validate:
         self.spatial_size = spatial_size #zyx
         x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz
         self.origin = torch.tensor([x_min, y_min, z_min]).to(d)
+        self.pts_min_xyz = torch.tensor([x_min, y_min, z_min]).to(d)
+        self.pts_max_xyz = torch.tensor([x_max, y_max, z_max]).to(d)
+
+        self.voxel_min_zyx = torch.tensor([0, 0, 0]).to(d)
+        self.voxel_max_zyx = torch.tensor([self.spatial_size[0]-1, self.spatial_size[1]-1, self.spatial_size[2]-1]).to(d)
 
         self.val_keyword = self.cfg.VAL.CLASS_VAL_KEYWORD # for kitti_eval
         list_val_keyword_keys = list(self.val_keyword.keys()) # same order as VAL.CLASS_VAL_KEYWORD.keys()
@@ -126,7 +131,8 @@ class Validate:
             print('* Exception error: check VAL.REGARDING')
         ### Consider output of network and dataset ###
 
-    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False, data_loader=None, save_res = False):
+    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, 
+                        is_print_memory=False, data_loader=None, save_res = False, delta_off_xyz=torch.tensor([10, 20, 30])):
         # self.network.eval()
         # if self.gen_net:
             # self.gen_net.eval()
@@ -154,12 +160,13 @@ class Validate:
         weather_cond_list = ['normal', 'overcast', 'fog', 'rain', 'sleet', 'lightsnow', 'heavysnow']
 
         # Check is_validate with small dataset
+        disable_bar = not sys.stderr.isatty()
         if is_subset:
             is_shuffle = True
-            tqdm_bar = tqdm(total=self.val_num_subset, desc='Test (Subset): ')
+            tqdm_bar = tqdm(total=self.val_num_subset, desc='Test (Subset): ', disable=disable_bar)
         else:
             is_shuffle = False
-            tqdm_bar = tqdm(total=len(data_loader), desc='Test (Total): ')
+            tqdm_bar = tqdm(total=len(data_loader), desc='Test (Total): ', disable=disable_bar)
 
         # data_loader = torch.utils.data.DataLoader(self.dataset_test, \
         #         batch_size = 1, shuffle = is_shuffle, collate_fn = self.dataset_test.collate_fn, \
@@ -283,8 +290,9 @@ class Validate:
                     elif isinstance(val, torch.Tensor) and val.device != device:
                         dict_datum[key] = dict_datum[key].to(device)
                 
-                
+            # print(f"GEN_NET: {self.gen_net}")   
             if self.gen_net:
+                
                 rdr_data = dict_datum['sp_features']
                 if rdr_data.shape[0] < self.Nvoxels:
                     n = rdr_data.shape[0]
@@ -417,7 +425,9 @@ class Validate:
                     offs, occ = out['mu_off'], out['occ_logit']
                     matched, gt_d, gt_f, gt_coords = local_match_closest_mdn(radar_st, lidar_st, gt_topk=100)
                         # gt_d: zyx
-                    out['mu_off'] = torch.flip(gt_d, dims=[1])
+                    out['mu_off'] = torch.flip(gt_d, dims=[-1]) + delta_off_xyz.to(gt_d.device).unsqueeze(0).unsqueeze(0)
+                    # print(f"\n torch.flip(gt_d, dims=[-1]): {torch.flip(gt_d, dims=[-1])}, out['mu_off']:{out['mu_off']}")
+
                     attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
@@ -449,6 +459,9 @@ class Validate:
                     # print(f'attrs_pts:{attrs_pts}, radar_st:{radar_st.features}')
 
                     voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
+                    attrs_pts[:, :, :3] = torch.clamp(attrs_pts[:, :, :3], min=self.pts_min_xyz, max=self.pts_max_xyz)
+                    voxel_coords[:, 1:4]= torch.clamp(voxel_coords[:, 1:4], min=self.voxel_min_zyx, max=self.voxel_max_zyx)
+
                     dict_datum["voxels"] = attrs_pts.float()
                     dict_datum["voxel_coords"] = voxel_coords
                     dict_datum["voxel_num_points"] = voxel_num_points
@@ -520,30 +533,30 @@ class Validate:
                 list_dir = [preds_dir, labels_dir, desc_dir]
                 split_path = path_dir + f'/{conf_thr}/' + 'all/val.txt'
 
-                preds_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'preds')
-                labels_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'gts')
-                desc_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'desc')
-                split_path_road =path_dir + f'/{conf_thr}/' + road_cond_tag + '/val.txt'
+                # preds_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'preds')
+                # labels_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'gts')
+                # desc_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'desc')
+                # split_path_road =path_dir + f'/{conf_thr}/' + road_cond_tag + '/val.txt'
 
-                preds_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'preds')
-                labels_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'gts')
-                desc_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'desc')
-                split_path_time = path_dir + f'/{conf_thr}/' + time_cond_tag + '/val.txt'
+                # preds_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'preds')
+                # labels_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'gts')
+                # desc_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'desc')
+                # split_path_time = path_dir + f'/{conf_thr}/' + time_cond_tag + '/val.txt'
 
-                preds_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'preds')
-                labels_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'gts')
-                desc_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'desc')
-                split_path_weather =path_dir + f'/{conf_thr}/' + weather_cond_tag + '/val.txt'
+                # preds_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'preds')
+                # labels_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'gts')
+                # desc_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'desc')
+                # split_path_weather =path_dir + f'/{conf_thr}/' + weather_cond_tag + '/val.txt'
 
-                os.makedirs(labels_dir_road, exist_ok=True)
-                os.makedirs(labels_dir_time, exist_ok=True)
-                os.makedirs(labels_dir_weather, exist_ok=True)
-                os.makedirs(desc_dir_road, exist_ok=True)
-                os.makedirs(desc_dir_time, exist_ok=True)
-                os.makedirs(desc_dir_weather, exist_ok=True)
-                os.makedirs(preds_dir_road, exist_ok=True)
-                os.makedirs(preds_dir_time, exist_ok=True)
-                os.makedirs(preds_dir_weather, exist_ok=True)
+                # os.makedirs(labels_dir_road, exist_ok=True)
+                # os.makedirs(labels_dir_time, exist_ok=True)
+                # os.makedirs(labels_dir_weather, exist_ok=True)
+                # os.makedirs(desc_dir_road, exist_ok=True)
+                # os.makedirs(desc_dir_time, exist_ok=True)
+                # os.makedirs(desc_dir_weather, exist_ok=True)
+                # os.makedirs(preds_dir_road, exist_ok=True)
+                # os.makedirs(preds_dir_time, exist_ok=True)
+                # os.makedirs(preds_dir_weather, exist_ok=True)
                 
                 if is_feature_inferenced:
                     if eval_ver2:
@@ -597,33 +610,33 @@ class Validate:
 
                         with open(labels_dir + '/' + idx_name + '.txt', mode) as f:
                             f.write(label+'\n')
-                        with open(labels_dir_road + '/' + idx_name + '.txt', mode) as f:
-                            f.write(label+'\n')
-                        with open(labels_dir_time + '/' + idx_name + '.txt', mode) as f:
-                            f.write(label+'\n')
-                        with open(labels_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                            f.write(label+'\n')
+                        # with open(labels_dir_road + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write(label+'\n')
+                        # with open(labels_dir_time + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write(label+'\n')
+                        # with open(labels_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write(label+'\n')
 
                     ### Process description ###
                     with open(desc_dir + '/' + idx_name + '.txt', 'w') as f:
                         f.write(dict_out_current['kitti_desc'])
-                    with open(desc_dir_road + '/' + idx_name + '.txt', 'w') as f:
-                        f.write(dict_out_current['kitti_desc'])
-                    with open(desc_dir_time + '/' + idx_name + '.txt', 'w') as f:
-                        f.write(dict_out_current['kitti_desc'])
-                    with open(desc_dir_weather + '/' + idx_name + '.txt', 'w') as f:
-                        f.write(dict_out_current['kitti_desc'])
+                    # with open(desc_dir_road + '/' + idx_name + '.txt', 'w') as f:
+                    #     f.write(dict_out_current['kitti_desc'])
+                    # with open(desc_dir_time + '/' + idx_name + '.txt', 'w') as f:
+                    #     f.write(dict_out_current['kitti_desc'])
+                    # with open(desc_dir_weather + '/' + idx_name + '.txt', 'w') as f:
+                    #     f.write(dict_out_current['kitti_desc'])
 
                     ### Process description ###
                     if len(dict_out_current['kitti_pred']) == 0:
                         with open(preds_dir + '/' + idx_name + '.txt', mode) as f:
                             f.write('\n')
-                        with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
-                            f.write('\n')
-                        with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
-                            f.write('\n')
-                        with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                            f.write('\n')
+                        # with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write('\n')
+                        # with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write('\n')
+                        # with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                        #     f.write('\n')
                     else:
                         for idx_pred, pred in enumerate(dict_out_current['kitti_pred']):
                             if idx_pred == 0:
@@ -633,22 +646,22 @@ class Validate:
 
                             with open(preds_dir + '/' + idx_name + '.txt', mode) as f:
                                 f.write(pred+'\n')
-                            with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
-                                f.write(pred+'\n')
-                            with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
-                                f.write(pred+'\n')
-                            with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                                f.write(pred+'\n')
+                            # with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
+                            #     f.write(pred+'\n')
+                            # with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
+                            #     f.write(pred+'\n')
+                            # with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                            #     f.write(pred+'\n')
                     
                     str_log = idx_name + '\n'
                     with open(split_path, 'a') as f:
                         f.write(str_log)
-                    with open(split_path_road, 'a') as f:
-                        f.write(str_log)
-                    with open(split_path_time, 'a') as f:
-                        f.write(str_log)
-                    with open(split_path_weather, 'a') as f:
-                        f.write(str_log)
+                    # with open(split_path_road, 'a') as f:
+                    #     f.write(str_log)
+                    # with open(split_path_time, 'a') as f:
+                    #     f.write(str_log)
+                    # with open(split_path_weather, 'a') as f:
+                    #     f.write(str_log)
                         
             # free memory (Killed error, checked with htop)
             if 'pointer' in dict_datum.keys():
@@ -711,7 +724,8 @@ class Validate:
                             f.write('\n\n')
                     print('\n')
                 except:
-                    print('* Exception error (Pipeline): Samples for the codition are not found')
+                    # print('* Exception error (Pipeline): Samples for the codition are not found')
+                    continue
 
         path_check = os.path.join(path_dir, 'Conf_thr', 'complete_results.txt')
         print(f'* Check {path_check}')

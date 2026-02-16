@@ -90,8 +90,8 @@ class BaseBEVBackbone(nn.Module):
         ret_dict = {}
         x = spatial_features
         for i in range(len(self.blocks)):
-            # print(x.shape)
-            # print(self.blocks[i])
+            # print(f"block i: {i}, x.shape: {x.shape}")
+            # print(f"block i: {i}, block: {self.blocks[i]}")
             x = self.blocks[i](x)
             # print(x.shape)
             
