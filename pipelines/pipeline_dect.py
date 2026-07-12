@@ -267,11 +267,13 @@ class Validate:
                 desc_dir_list.append(desc_dir)
                 split_path_list.append(split_path)
 
+        self.val_num_subset = 1
         # Creating gts and preds txt files for evaluation
         for idx_datum, dict_datum in enumerate(data_loader):
             if is_subset:
                 if (idx_datum >= self.val_num_subset):
                     break
+            # if idx_datum >0: break
             # if idx_datum > 20:
             #     break
             # print(f'idx:{idx_datum}, dict_datum:{dict_datum}')
@@ -334,6 +336,7 @@ class Validate:
                 all_idx = torch.cat([rad_idx, lid_idx], dim=0)
                 all_idx = torch.unique(all_idx, dim=0)  # union of occupied voxels
                 union_st = scatter_radar_to_union(radar_st, all_idx, self.spatial_size, 1)
+                # print(f"before: batch_dict['voxels']: {dict_datum['voxels']}; batch_dict['voxel_coords']: {dict_datum['voxel_coords']}")
 
                 out = self.gen_net(radar_st) 
                 # print(f'out:{out}, radar_st.features:{radar_st.features}, radar_st.indices:{radar_st.indices}')
@@ -466,6 +469,7 @@ class Validate:
                     dict_datum["voxel_coords"] = voxel_coords
                     dict_datum["voxel_num_points"] = voxel_num_points
                     # print(f"voxel_coords:{voxel_coords}, out['st']: {out['st'].indices}")
+                    # print(f"after: batch_dict['voxels']: {dict_datum['voxels']}; batch_dict['voxel_coords']: {dict_datum['voxel_coords']}")
 
                     vis = False
                     if vis:
@@ -509,6 +513,7 @@ class Validate:
                         
             # print(f"------ dict_datum: {dict_datum['sp_features'].shape}")
             dict_out = self.dect_net(dict_datum)
+            # print(f"dict_out['pred_dicts']: { dict_out['pred_dicts']}")
 
             # except:
             #     print('* Exception error (Pipeline): error during inferencing a sample -> empty prediction')
@@ -526,6 +531,7 @@ class Validate:
 
             ### for every conf in list_conf_thr ###
             for conf_thr in list_conf_thr:
+                # print(f'conf: {conf_thr}')
                 ### For All Conditions ###
                 preds_dir = os.path.join(path_dir, f'{conf_thr}', 'all', 'preds')
                 labels_dir = os.path.join(path_dir, f'{conf_thr}', 'all', 'gts')
@@ -533,40 +539,42 @@ class Validate:
                 list_dir = [preds_dir, labels_dir, desc_dir]
                 split_path = path_dir + f'/{conf_thr}/' + 'all/val.txt'
 
-                # preds_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'preds')
-                # labels_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'gts')
-                # desc_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'desc')
-                # split_path_road =path_dir + f'/{conf_thr}/' + road_cond_tag + '/val.txt'
+                preds_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'preds')
+                labels_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'gts')
+                desc_dir_road = os.path.join(path_dir, f'{conf_thr}', road_cond_tag, 'desc')
+                split_path_road =path_dir + f'/{conf_thr}/' + road_cond_tag + '/val.txt'
 
-                # preds_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'preds')
-                # labels_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'gts')
-                # desc_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'desc')
-                # split_path_time = path_dir + f'/{conf_thr}/' + time_cond_tag + '/val.txt'
+                preds_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'preds')
+                labels_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'gts')
+                desc_dir_time = os.path.join(path_dir, f'{conf_thr}', time_cond_tag, 'desc')
+                split_path_time = path_dir + f'/{conf_thr}/' + time_cond_tag + '/val.txt'
 
-                # preds_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'preds')
-                # labels_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'gts')
-                # desc_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'desc')
-                # split_path_weather =path_dir + f'/{conf_thr}/' + weather_cond_tag + '/val.txt'
+                preds_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'preds')
+                labels_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'gts')
+                desc_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'desc')
+                split_path_weather =path_dir + f'/{conf_thr}/' + weather_cond_tag + '/val.txt'
 
-                # os.makedirs(labels_dir_road, exist_ok=True)
-                # os.makedirs(labels_dir_time, exist_ok=True)
-                # os.makedirs(labels_dir_weather, exist_ok=True)
-                # os.makedirs(desc_dir_road, exist_ok=True)
-                # os.makedirs(desc_dir_time, exist_ok=True)
-                # os.makedirs(desc_dir_weather, exist_ok=True)
-                # os.makedirs(preds_dir_road, exist_ok=True)
-                # os.makedirs(preds_dir_time, exist_ok=True)
-                # os.makedirs(preds_dir_weather, exist_ok=True)
+                os.makedirs(labels_dir_road, exist_ok=True)
+                os.makedirs(labels_dir_time, exist_ok=True)
+                os.makedirs(labels_dir_weather, exist_ok=True)
+                os.makedirs(desc_dir_road, exist_ok=True)
+                os.makedirs(desc_dir_time, exist_ok=True)
+                os.makedirs(desc_dir_weather, exist_ok=True)
+                os.makedirs(preds_dir_road, exist_ok=True)
+                os.makedirs(preds_dir_time, exist_ok=True)
+                os.makedirs(preds_dir_weather, exist_ok=True)
                 
                 if is_feature_inferenced:
                     if eval_ver2:
                         pred_dicts = dict_out['pred_dicts'][0]
+                        # print(f'pred_dicts: {pred_dicts}')
                         pred_boxes = pred_dicts['pred_boxes'].detach().cpu().numpy()
                         pred_scores = pred_dicts['pred_scores'].detach().cpu().numpy()
                         pred_labels = pred_dicts['pred_labels'].detach().cpu().numpy()
+                        # print(f"pred_boxes: {pred_boxes}, pred_scores: {pred_scores}, pred_labels: {pred_labels}")
                         list_pp_bbox = []
                         list_pp_cls = []
-
+                        # print(f"len labels: {len(pred_labels)}")
                         for idx_pred in range(len(pred_labels)):
                             x, y, z, l, w, h, th = pred_boxes[idx_pred]
                             score = pred_scores[idx_pred]
@@ -586,6 +594,7 @@ class Validate:
                             'pp_num_bbox': pp_num_bbox,
                             'pp_desc': dict_out['meta'][0]['desc']
                         })
+                        # print(f"dict_out_current: {dict_out_current['pp_bbox']}, {dict_out_current['pp_cls']}")
                     else:
                         dict_out_current = self.network.list_modules[-1].get_nms_pred_boxes_for_single_sample(dict_out, conf_thr, is_nms=True)
                 else:
@@ -610,33 +619,33 @@ class Validate:
 
                         with open(labels_dir + '/' + idx_name + '.txt', mode) as f:
                             f.write(label+'\n')
-                        # with open(labels_dir_road + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write(label+'\n')
-                        # with open(labels_dir_time + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write(label+'\n')
-                        # with open(labels_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write(label+'\n')
+                        with open(labels_dir_road + '/' + idx_name + '.txt', mode) as f:
+                            f.write(label+'\n')
+                        with open(labels_dir_time + '/' + idx_name + '.txt', mode) as f:
+                            f.write(label+'\n')
+                        with open(labels_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                            f.write(label+'\n')
 
                     ### Process description ###
                     with open(desc_dir + '/' + idx_name + '.txt', 'w') as f:
                         f.write(dict_out_current['kitti_desc'])
-                    # with open(desc_dir_road + '/' + idx_name + '.txt', 'w') as f:
-                    #     f.write(dict_out_current['kitti_desc'])
-                    # with open(desc_dir_time + '/' + idx_name + '.txt', 'w') as f:
-                    #     f.write(dict_out_current['kitti_desc'])
-                    # with open(desc_dir_weather + '/' + idx_name + '.txt', 'w') as f:
-                    #     f.write(dict_out_current['kitti_desc'])
+                    with open(desc_dir_road + '/' + idx_name + '.txt', 'w') as f:
+                        f.write(dict_out_current['kitti_desc'])
+                    with open(desc_dir_time + '/' + idx_name + '.txt', 'w') as f:
+                        f.write(dict_out_current['kitti_desc'])
+                    with open(desc_dir_weather + '/' + idx_name + '.txt', 'w') as f:
+                        f.write(dict_out_current['kitti_desc'])
 
                     ### Process description ###
                     if len(dict_out_current['kitti_pred']) == 0:
                         with open(preds_dir + '/' + idx_name + '.txt', mode) as f:
                             f.write('\n')
-                        # with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write('\n')
-                        # with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write('\n')
-                        # with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                        #     f.write('\n')
+                        with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
+                            f.write('\n')
+                        with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
+                            f.write('\n')
+                        with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                            f.write('\n')
                     else:
                         for idx_pred, pred in enumerate(dict_out_current['kitti_pred']):
                             if idx_pred == 0:
@@ -646,22 +655,22 @@ class Validate:
 
                             with open(preds_dir + '/' + idx_name + '.txt', mode) as f:
                                 f.write(pred+'\n')
-                            # with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
-                            #     f.write(pred+'\n')
-                            # with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
-                            #     f.write(pred+'\n')
-                            # with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
-                            #     f.write(pred+'\n')
+                            with open(preds_dir_road + '/' + idx_name + '.txt', mode) as f:
+                                f.write(pred+'\n')
+                            with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
+                                f.write(pred+'\n')
+                            with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                                f.write(pred+'\n')
                     
                     str_log = idx_name + '\n'
                     with open(split_path, 'a') as f:
                         f.write(str_log)
-                    # with open(split_path_road, 'a') as f:
-                    #     f.write(str_log)
-                    # with open(split_path_time, 'a') as f:
-                    #     f.write(str_log)
-                    # with open(split_path_weather, 'a') as f:
-                    #     f.write(str_log)
+                    with open(split_path_road, 'a') as f:
+                        f.write(str_log)
+                    with open(split_path_time, 'a') as f:
+                        f.write(str_log)
+                    with open(split_path_weather, 'a') as f:
+                        f.write(str_log)
                         
             # free memory (Killed error, checked with htop)
             if 'pointer' in dict_datum.keys():
@@ -679,6 +688,7 @@ class Validate:
         for conf_thr in list_conf_thr:
             for condition in all_condition_list:
                 try:
+                    # print(f'conf_thr: {conf_thr}, condition: {condition}')
                     preds_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'preds')
                     labels_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'gts')
                     desc_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'desc')
@@ -696,6 +706,7 @@ class Validate:
                         #     dict_metrics, result = get_official_eval_result_revised(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
                         # else:
                         dict_metrics, result = get_official_eval_result(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
+                        # print(f'conf_thr: {conf_thr}, dict_metrics: {dict_metrics}')
                         list_metrics.append(dict_metrics)
                         list_results.append(result)
                     print('Conf thr: ', str(conf_thr), ', Condition: ', condition)

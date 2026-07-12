@@ -70,10 +70,11 @@ class SparseUNet3D_MDN(nn.Module):
       - mu (K,3), log_sigma (K,3), mix_logits (K,1)
       - optional: intensity mean (K,1), occupancy logit (K,1)
     """
-    def __init__(self, in_ch=20, base_ch=32, K=5):
+    def __init__(self, in_ch=20, base_ch=32, K=5, t_max=None):
         super().__init__()
         C = base_ch
         self.K = K
+        self.t_max = t_max.unsqueeze(0).unsqueeze(0) if t_max is not None else None
 
         # ---------------- Encoder ----------------
         self.enc0 = subm_block(in_ch, C, indice_key="subm0")
@@ -163,13 +164,17 @@ import torch.nn.functional as F
 import numpy as np
 
 class SynthLocalLoss_MDN(nn.Module):
-    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, gt_topk=10):
+    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, gt_topk=10, t_max=None, t_min=None, voxel_size=None):
         super().__init__()
         self.w_occ = w_occ
         self.w_mdn = w_mdn
         self.w_int = w_int
         self.gt_topk = gt_topk
         self.bce = nn.BCEWithLogitsLoss()
+        d = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.t_max = t_max.unsqueeze(0).unsqueeze(0).to(d) if t_max is not None else None
+        self.t_min = t_min.unsqueeze(0).unsqueeze(0).to(d) if t_min else -self.t_max if t_max is not None else None
+        self.voxel_size = voxel_size
 
     @staticmethod
     def _mdn_log_prob(mu, log_sigma, mix_logit, y):
@@ -197,8 +202,7 @@ class SynthLocalLoss_MDN(nn.Module):
         logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * log_sigma_ + log2pi).sum(dim=-1)  # (M,T,K)
 
         log_mix = logN + log_pi.unsqueeze(1)          # (M,T,K)
-        logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
-        return logp
+        return log_mix
 
     def forward(self, out_dict, radar_st: SparseConvTensor, lidar_st: SparseConvTensor):
         """
@@ -217,6 +221,7 @@ class SynthLocalLoss_MDN(nn.Module):
 
         # Convert GT offsets to xyz if your mu_off is xyz
         gt_offsets_xyz = torch.flip(gt_offsets_zyx, dims=[-1])  # (N,topk,3) zyx->xyz
+        # print(f"gt_offsets_xyz: {gt_offsets_xyz[0][0]}")
 
         # ---------- Occupancy loss ----------
         # We want "at least one slot exists" when matched_mask is True.
@@ -231,8 +236,19 @@ class SynthLocalLoss_MDN(nn.Module):
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
 
-            # logp = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
-            mdn_nll = ((y_m.unsqueeze(2) - mu_m.unsqueeze(1)) ** 2).mean() #-(logp.mean())                             # scalar
+            log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
+            logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
+            scale = torch.tensor([20, 20, 8], device=mu_m.device)
+            # scale = torch.tensor([21.2680, 28.4487, 7.7462], device=mu_m.device)
+            e = (y_m - mu_m)/scale
+            y_mean = y_m.mean(1)
+            mu_mean = mu_m.mean(1)
+            mdn_nll = ((y_mean - mu_mean) ** 2).mean() #torch.nn.functional.smooth_l1_loss(e, torch.zeros_like(e)) # ## #-(logp.mean())           #  #                 # scalar
+            
+            # print(f"y_m: {y_mean[0].tolist()}, mu_m: {mu_mean[0].tolist()}")
+            # print(f"std (xyz): y: {y_mean.std(0).tolist()}; mu: {mu_mean.std(0).tolist()}")
+            # print(f"median (xyz): y: {y_mean.median(0).values.tolist()}; mu: {mu_mean.median(0).values.tolist()}")
+            # print(f"95th (xyz): y: {torch.quantile(y_mean, 0.95, dim=0).tolist()}; mu: {torch.quantile(mu_mean, 0.95, dim=0).tolist()}")
 
             # ---------- Optional: intensity loss weighted by responsibilities ----------
             # Your gt_feat is (N,topk,C). In your earlier code C=20=5*4 (x,y,z,i) in meters.
@@ -244,24 +260,7 @@ class SynthLocalLoss_MDN(nn.Module):
                 gt_int = gt_pts[..., 3].mean(dim=2)                                   # (N,T)
                 gt_int_m = gt_int[matched_mask]                                       # (M,T)
 
-                # Responsibilities r_{t,k} ∝ pi_k N(y_t|...)
-                if ml_m.ndim == 3:
-                    ml_m2 = ml_m.squeeze(-1)  # (M,K)
-                else:
-                    ml_m2 = ml_m
-
-                log_pi = F.log_softmax(ml_m2, dim=1)  # (M,K)
-
-                # compute component log probs (M,T,K)
-                y_  = y_m.unsqueeze(2)        # (M,T,1,3)
-                mu_ = mu_m.unsqueeze(1)       # (M,1,K,3)
-                ls_ = ls_m.unsqueeze(1)       # (M,1,K,3)
-                sigma2_ = torch.exp(2.0 * ls_) + 1e-12
-
-                log2pi = np.log(2.0 * np.pi)
-                logN = -0.5 * (((y_ - mu_) ** 2) / sigma2_ + 2.0 * ls_ + log2pi).sum(dim=-1)  # (M,T,K)
-                log_post = logN + log_pi.unsqueeze(1)                                          # (M,T,K)
-                r = torch.softmax(log_post, dim=-1)                                            # (M,T,K)
+                r = torch.softmax(log_mix, dim=-1)                                            # (M,T,K)
 
                 pred_int_m = mu_int[matched_mask].squeeze(-1)          # (M,K)
                 pred_int_m = pred_int_m.unsqueeze(1)                   # (M,1,K)
@@ -273,7 +272,21 @@ class SynthLocalLoss_MDN(nn.Module):
             mdn_nll = mu_off.sum() * 0.0
             int_loss = mdn_nll
 
-        return self.w_occ * occ_loss + self.w_mdn * mdn_nll + self.w_int * int_loss
+        error = mu_m.mean(1) - y_m.mean(1)
+        # print(f'mu: min: {torch.min(mu_m)}, max: {torch.max(mu_m)}, isnan: {torch.isnan(mu_m).any()}, isinf: {torch.isinf(mu_m).any()}')
+        # print(f'Y:  min: {torch.min(y_m)}, max: {torch.max(y_m)}, isnan: {torch.isnan(y_m).any()}, isinf: {torch.isinf(y_m).any()}')
+        # # effective but moderate performanc
+        # tol_loss_l = torch.relu(self.t_min - error) 
+        # tol_loss_h = torch.relu(error - self.t_max)
+        # tol_loss = (tol_loss_l + tol_loss_h)**2
+
+        tol_loss = (abs(error) - self.t_max)**2 # effective but moderate performance
+        # print(f'min: {torch.min(error)}, max: {torch.max(error)}, isnan: {torch.isnan(error).any()}, isinf: {torch.isinf(error).any()}')
+        # tol_loss = torch.sqrt(t) # nan error
+        # tol_loss = (self.voxel_size*(abs(error) - self.t_max))**2 # not helpful at all: converting to meter 
+        # # print(f'tol_loss_l: {tol_loss_l}, tol_loss_h: {tol_loss_h}')
+        # return self.w_occ * occ_loss + self.w_mdn * mdn_nll + self.w_int * int_loss + 0.2*tol_loss.mean()
+        return occ_loss, mdn_nll, int_loss, tol_loss.mean()
 
 import torch
 import torch.nn.functional as F

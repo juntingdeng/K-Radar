@@ -142,10 +142,11 @@ if __name__ == '__main__':
     dl = test_dataloader if args.set == 'test' else train_dataloader
     x_min_all, x_max_all = float('inf'), 0
     radar_error_all, lidar_err_all = [], []
+    error = torch.zeros((Nvoxels*args.gt_topk, 3)).to(d)
     for bi, batch_dict in enumerate(dl):
-        if bi >0:
-            # print(f'finished {bi}')
-            break
+        # if bi >0:
+        #     # print(f'finished {bi}')
+        #     break
 
         # print(f'idx:{batch_dict}, dict_datum:{batch_dict}')
         if not args.plot_all and bi >= args.plot_nframes: break
@@ -162,8 +163,8 @@ if __name__ == '__main__':
         rdr_data = batch_dict['sp_features']
         ldr_data = batch_dict['voxels']
         lmin, lmax = ldr_data.min(), ldr_data.max()
-        print(f'rdr_data.shape[0]: {rdr_data.shape[0]}, rdr_data: {rdr_data}')
-        print(f'ldr_data.shape[0]: {ldr_data.shape[0]}, ldr_data: {ldr_data}')
+        # print(f'rdr_data.shape[0]: {rdr_data.shape[0]}, rdr_data: {rdr_data}')
+        # print(f'ldr_data.shape[0]: {ldr_data.shape[0]}, ldr_data: {ldr_data}')
         if rdr_data.shape[0] < Nvoxels:
             n = rdr_data.shape[0]
             while n < Nvoxels:
@@ -197,10 +198,10 @@ if __name__ == '__main__':
         
         rdr_is_all_zerocount = (rdr_data[:, 1:, :] == 0).all(dim=(1, 2)).sum()
         ldr_is_all_zerocount = (ldr_data[:, 1:, :] == 0).all(dim=(1, 2)).sum()
-        print(f'rdr_is_all_zerocount: {rdr_is_all_zerocount}, ldr_is_all_zerocount:{ldr_is_all_zerocount}')
+        # print(f'rdr_is_all_zerocount: {rdr_is_all_zerocount}, ldr_is_all_zerocount:{ldr_is_all_zerocount}')
         rdr_cnt = (rdr_data.abs().sum(dim=2) == 0).sum(dim=1)
         ldr_cnt = (ldr_data.abs().sum(dim=2) == 0).sum(dim=1)
-        print(f'rdr_cnt: {rdr_cnt.sum()/rdr_cnt.shape[0]}, ldr_cnt: {ldr_cnt.sum()/ldr_cnt.shape[0]}')
+        # print(f'rdr_cnt: {rdr_cnt.sum()/rdr_cnt.shape[0]}, ldr_cnt: {ldr_cnt.sum()/ldr_cnt.shape[0]}')
 
         rad_idx = radar_st.indices           # [Nr,4]
         lid_idx = lidar_st.indices           # [Nl,4]
@@ -212,7 +213,9 @@ if __name__ == '__main__':
         #gt_d: zyx
         matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
         gt_d_xyz = torch.flip(gt_d, dims=[-1]) #gt_d: zyx -> xyz
-        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, {gt_d.abs().mean().item()}, {gt_d.abs().median().item()}, {gt_d.abs().min().item()}, {gt_d.abs().max().item()}')
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, z: {gt_d[:, :, 0].abs().mean().item()}, {gt_d[:, :, 0].abs().median().item()}, {gt_d[:, :, 0].abs().min().item()}, {gt_d[:, :, 0].abs().max().item()}')
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, y: {gt_d[:, :, 1].abs().mean().item()}, {gt_d[:, :, 1].abs().median().item()}, {gt_d[:, :, 1].abs().min().item()}, {gt_d[:, :, 1].abs().max().item()}')
+        print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, x: {gt_d[:, :, 2].abs().mean().item()}, {gt_d[:, :, 2].abs().median().item()}, {gt_d[:, :, 2].abs().min().item()}, {gt_d[:, :, 2].abs().max().item()}')
 
         rdr_features = rdr_data[:, 0, :3]
         ids = (rdr_features != 0).any(dim=1)      # boolean mask
@@ -277,8 +280,15 @@ if __name__ == '__main__':
         else:
             pred_st, offs, occ = out['st'], out['mu_off'], out['occ_logit']
             # out['mu_off'] = gt_d_xyz
-            print(f"out['mu_off']: {out['mu_off']}, gt_d_xyz: {gt_d_xyz}")
-            print(f"out['mu_off']- gt_d: {(out['mu_off'].mean(dim=1) - gt_d_xyz.mean(dim=1))}")
+            # print(f"out['mu_off']: {out['mu_off']}, gt_d_xyz: {gt_d_xyz}")
+            if not args.plot_all:
+                error = (out['mu_off'].mean(1) - gt_d_xyz.mean(1)).abs().reshape(-1, 3)
+                print(f"error-x = {error[:, 0].median()}, {error[:, 0].mean()}, {error[:, 0].min()}, {error[:, 0].max()}")
+                print(f"error-y = {error[:, 1].median()}, {error[:, 1].mean()}, {error[:, 1].min()}, {error[:, 1].max()}")
+                print(f"error-z = {error[:, 2].median()}, {error[:, 2].mean()}, {error[:, 2].min()}, {error[:, 2].max()}")
+            else:
+                # print(f"error: {error.device}, o: {(out['mu_off'] - gt_d_xyz).abs().reshape(-1, 3).device}")
+                error += (out['mu_off'].mean(1) - gt_d_xyz.mean(1)).abs().reshape(-1, 3)
             attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                 pred_st=out['st'],
                                                                 mu_off=out["mu_off"],
@@ -306,10 +316,10 @@ if __name__ == '__main__':
                                                                 sample_mode="mixture",  # or "top1" for deterministic
                                                                 clamp_intensity=(0.0, None),
                                                             )
-            print(f'rdr indices: {radar_st.indices}, pred indices: {pred_st.indices}')
+            # print(f'rdr indices: {radar_st.indices}, pred indices: {pred_st.indices}')
             ids = (attrs_pts[:, 0, :3] != 0).any(dim=1)      # boolean mask
-            features_nonzeros = attrs_pts[ids, 0, :3]
-            print(f'features_nonzeros: {features_nonzeros.shape}')
+            features_nonzeros = attrs_pts[ids, 0, :3] if attrs_pts.ndim==3 else attrs_pts[ids, :3]
+            # print(f'features_nonzeros: {features_nonzeros.shape}')
 
             # new_coords = mu[ids].int() + torch.flip(pred_st.indices[ids, 1:4], dims=[1]) #xyz
             voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
@@ -319,7 +329,7 @@ if __name__ == '__main__':
             within = (features_nonzeros <= voxel_max_xyz) & (features_nonzeros >= voxel_min_xyz)
             within_any = within.any(axis=1)
             within_all = within.all(axis=1)
-            print(f"Prediced: within: {within}, sum-any:{sum(within_any)}, sum-all:{sum(within_all)}, N points:{features_nonzeros.shape[0]}")
+            # print(f"Prediced: within: {within}, sum-any:{sum(within_any)}, sum-all:{sum(within_all)}, N points:{features_nonzeros.shape[0]}")
 
             points_xyz = attrs_pts[:,:, :3].reshape(-1, 3).detach().cpu().numpy()
             intensity = attrs_pts[:,:, -1].reshape(-1).detach().cpu().numpy()
@@ -442,7 +452,12 @@ if __name__ == '__main__':
             np.save(os.path.join(fig_path, f'radar_y_{prefix}.npy'), radar_y)
             np.save(os.path.join(fig_path, f'lidar_x_{prefix}.npy'), lidar_x)
             np.save(os.path.join(fig_path, f'lidar_y_{prefix}.npy'), lidar_y)
-
+    
+    error /= len(dl)
+    print(f"avgerage-error-x = {error[:, 0].median()}, {error[:, 0].mean()}, {error[:, 0].min()}, {error[:, 0].max()}")
+    print(f"avgerage-error-y = {error[:, 1].median()}, {error[:, 1].mean()}, {error[:, 1].min()}, {error[:, 1].max()}")
+    print(f"avgerage-error-z = {error[:, 2].median()}, {error[:, 2].mean()}, {error[:, 2].min()}, {error[:, 2].max()}")
+    
     plot_mapping_error_cdf(radar_dists=np.stack(radar_error_all).reshape(-1), lidar_dists=np.stack(lidar_err_all).reshape(-1), unit='m', save_path=os.path.join(fig_path, f"{set}_all_error_cdf.png"))
     np.save(os.path.join(fig_path, f'{set}_radar_error_all.npy'), radar_error_all)
     np.save(os.path.join(fig_path, f'{set}_lidar_error_all.npy'), lidar_err_all)

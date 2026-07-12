@@ -32,8 +32,8 @@ def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--training', action='store_true')
     args.add_argument('--mdn', action='store_true')
-    args.add_argument('--log_sig', type=str, default='251211_145058')
-    args.add_argument('--load_epoch', type=int, default='500')
+    args.add_argument('--log_sig', type=str, default='260213_224412') # '260213_224412' To evaluate offsets error
+    args.add_argument('--load_epoch', type=int, default='180')
     args.add_argument('--save_res', action='store_true')
     args.add_argument('--nepochs', type=int, default=300)
     args.add_argument('--save_freq', type=int, default=20)
@@ -152,10 +152,11 @@ if __name__ == '__main__':
     print(f'dect_net.training: {dect_net.training}')
     print(f"dect_loss: {model_load['loss_dect']}")
     dl = test_dataloader if args.set == 'test' else train_dataloader
-    for ss in np.arange(1, 11, 1):
-        for dx in np.arange(0, 100, ss):
-            for dy in np.arange(0, 100, ss):
-                for dz in np.arange(0, 10, ss):
-                    print(f'\n################Step size: {ss}; Delta offsets (xyz): ({dx}, {dy}, {dz})################')
-                    ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, 
-                                    data_loader=dl, save_res=args.save_res, delta_off_xyz=torch.tensor([dx, dy, dz]).to(d))
+    # for ss in np.arange(1, 11, 1):
+    sx, sy, sz = 4, 4, 1
+    for dx in np.arange(2, 31, sx):
+        for dy in np.arange(0, 1, sy):
+            for dz in np.arange(0, 1, sz):
+                print(f'\n################Step size: ({sx}, {sy}, {sz}); Delta offsets (xyz): ({dx}, {dy}, {dz})################')
+                ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, 
+                                data_loader=dl, save_res=args.save_res, delta_off_xyz=torch.tensor([dx, dy, dz]).to(d))

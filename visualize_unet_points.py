@@ -406,7 +406,7 @@ def unet_slots_to_xyz_attrs(pred, offs, occ, voxel_size, origin, prob_thresh=0.3
     idx = st.indices.long()      # [N,4]
     # z = idx[:,1].float(); y = idx[:,2].float(); x = idx[:,3].float()
     idx = idx[:, 1:4].float()
-    idx = torch.flip(idx, dims=[1])
+    idx = torch.flip(idx, dims=[-1])
     x = idx[:,0].float(); y = idx[:,1].float(); z = idx[:,2].float()
     vx, vy, vz = voxel_size
     ox, oy, oz = origin

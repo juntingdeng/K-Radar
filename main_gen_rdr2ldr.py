@@ -32,7 +32,7 @@ def arg_parser():
     args = argparse.ArgumentParser()
     args.add_argument('--training', action='store_true')
     args.add_argument('--mdn', action='store_true')
-    args.add_argument('--log_sig', type=str, default='251211_145058')
+    args.add_argument('--log_sig', type=str, default='')
     args.add_argument('--load_epoch', type=int, default='500')
     args.add_argument('--save_res', action='store_true')
     args.add_argument('--nepochs', type=int, default=300)
@@ -47,9 +47,9 @@ def arg_parser():
     args.add_argument('--model_cfg', type=str, default='ldr')
     args.add_argument('--ldr_pretrained', action='store_true')
     args.add_argument('--gen_pretrained', action='store_true')
-    args.add_argument('--ldr_pretrained_log_sig', type=str, default='251207_223958')
+    args.add_argument('--ldr_pretrained_log_sig', type=str, default='')
     args.add_argument('--ldr_pretrained_epoch', type=str, default=50)
-    args.add_argument('--gen_pretrained_log_sig', type=str, default='260211_104838')
+    args.add_argument('--gen_pretrained_log_sig', type=str, default='')
     args.add_argument('--gen_pretrained_epoch', type=str, default=200)
     args.add_argument('--eps', type=float, default=0.5)
     args.add_argument('--gt_topk', default=100, type=int)
@@ -61,6 +61,10 @@ if __name__ == '__main__':
     d = 'cuda' if torch.cuda.is_available() else 'cpu'
     # cfg_path = './configs/cfg_rdr_ldr.yml'
     args = arg_parser()
+    args_dict = vars(args)
+    args_written = ''
+    for key, val in args_dict.items():
+        args_written += f'{key}: {val}\n'
     rand_eps = args.eps
     training = args.training
     
@@ -99,15 +103,15 @@ if __name__ == '__main__':
             gen_net = SparseUNet3D(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL).to(d)  
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
-            gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk)
-        gen_opt = optim.Adam(gen_net.parameters(), lr=1e-3)
+            gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz)
+        gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr)
     
         if args.gen_pretrained:
             if not args.mdn:
                 gen_net = SparseUNet3D(in_ch=20).to(d)  
             else:
-                gen_net = SparseUNet3D_MDN(in_ch=20).to(d)
+                gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL).to(d)
             model_load_ldr = torch.load(f'./logs/exp_{args.gen_pretrained_log_sig}_RTNH/models/epoch{args.gen_pretrained_epoch}.pth')
             gen_net.load_state_dict(state_dict=model_load_ldr['gen_state_dict'])
 
@@ -130,8 +134,10 @@ if __name__ == '__main__':
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')
     os.makedirs(save_model_path, exist_ok=True)
-    scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
+    with open(os.path.join(log_path, 'args.txt'), 'w') as f:
+        f.write(args_written)
 
+    scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
     n_epochs = args.nepochs
     save_freq = args.save_freq
     mseloss = nn.MSELoss(reduction='mean')
@@ -153,7 +159,7 @@ if __name__ == '__main__':
         print(f'dect_net.training: {dect_net.training}')
         print(f"/////dect_loss: {model_load['loss_dect']}")
         dl = test_dataloader if args.set == 'test' else train_dataloader
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res)
+        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True)
 
     else:
         for ei in range(n_epochs):
@@ -170,6 +176,7 @@ if __name__ == '__main__':
             
             for bi, batch_dict in enumerate(train_dataloader):
                 # print(f'ei:{ei}, bi:{bi}')
+                if bi > 100: break
                 if args.gen_enable:
                     gen_opt.zero_grad()
                     batch_dict = rdr_processor.forward(batch_dict)
@@ -236,7 +243,7 @@ if __name__ == '__main__':
                     # print(f'Here1 {union_st.features.shape[0]}, {union_st.indices.shape[0]}')
                     
                     out = gen_net(radar_st)  # SparseConvTensor with logits.features [N_active, K] on same coords as c0
-
+                    # print(f"\nbefore: batch_dict['voxels']: {batch_dict['voxels'][0][0]}; batch_dict['voxel_coords']: {batch_dict['voxel_coords'][0]}")
                     if not args.mdn:
                         pred, occ, attrs = out['st'], out['logits'], out['attrs']
                         loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
@@ -300,11 +307,18 @@ if __name__ == '__main__':
                                 batch_dict['sp_indices'] = batch_dict['sp_indices'].to(d)
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
-                        loss_gen = gen_loss(out, radar_st, lidar_st)
+                        # loss_gen = gen_loss(out, radar_st, lidar_st)
+                        occ_loss, mdn_nll, int_loss, tol_loss = gen_loss(out, radar_st, lidar_st)
+                        loss_gen = mdn_nll #gen_loss.w_occ * occ_loss + gen_loss.w_mdn * mdn_nll + gen_loss.w_int * int_loss #+ 0.2*tol_loss
+                        # print(f"occ_loss: {occ_loss.item()}, mdn_nll: {mdn_nll.item()}, int_loss: {int_loss.item()}, tol_loss: {tol_loss.item()}")
+
                         # matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
                         # # gt_d: zyx
                         # out['mu_off'] = torch.flip(gt_d, dims=[-1])
                         # # print(f"out['mu_off']: {out['mu_off']}")
+                        # print(f"out['mu_off']-x: {out['mu_off'][:, :, 0].min()} ~ {out['mu_off'][:, :, 0].max()}")
+                        # print(f"out['mu_off']-y: {out['mu_off'][:, :, 1].min()} ~ {out['mu_off'][:, :, 1].max()}")
+                        # print(f"out['mu_off']-z: {out['mu_off'][:, :, 2].min()} ~ {out['mu_off'][:, :, 2].max()}")
                         attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],
                                                                                         mu_off=out["mu_off"],
@@ -318,11 +332,14 @@ if __name__ == '__main__':
                                                                                         sample_mode="mixture",  # or "top1" for deterministic
                                                                                         clamp_intensity=(0.0, None),
                                                                                     )
-                                               
+                        if (torch.isnan(attrs_pts)).any():
+                            print(f'attrs_pts has nan')
+
                         voxel_coords[:, 1:4] += torch.flip(mu.int(), dims=[1]) 
                         batch_dict["voxels"] = attrs_pts.float()
                         batch_dict["voxel_coords"] = voxel_coords
                         batch_dict["voxel_num_points"] = voxel_num_points
+                        # print(f"after: batch_dict['voxels']: {batch_dict['voxels'][0][0]}; batch_dict['voxel_coords']: {batch_dict['voxel_coords'][0]}")
                         
                 
                 # print(f"Here--------: {batch_dict['voxels'].shape[0]}, {batch_dict['voxel_num_points'].shape[0]}")
@@ -410,7 +427,7 @@ if __name__ == '__main__':
         ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
         if args.gen_enable:
             plt.plot(loss_gen_curve, label='gen-loss')
-        plt.plot(loss_dect_curve, label='dect-loss')
+        # plt.plot(loss_gen_curve, label='dect-loss')
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.legend()

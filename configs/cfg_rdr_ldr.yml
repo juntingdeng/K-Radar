@@ -101,7 +101,7 @@ MODEL:
     VER: 'v1_0'
     SHUFFLE_POINTS: True
     TRANSFORM_POINTS_TO_VOXELS: True
-    MAX_POINTS_PER_VOXEL: 5
+    MAX_POINTS_PER_VOXEL: 1
     MAX_NUMBER_OF_VOXELS: {
       'train': 16000,
       'test': 40000
@@ -341,8 +341,8 @@ MODEL:
       }
 
   POST_PROCESSING:
-    RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-    SCORE_THRESH: 0.1
+    RECALL_THRESH_LIST: [0.001, 0.5, 0.7]
+    SCORE_THRESH: 0.001
     OUTPUT_RAW_SCORE: False
 
     EVAL_METRIC: kitti
@@ -364,7 +364,7 @@ VAL:
   NUM_SUBSET: 500 # 500
   VAL_PER_EPOCH_FULL: 11 # epoch for validate full dataset
 
-  LIST_VAL_CONF_THR: [0.3, 0.5, 0.7]
+  LIST_VAL_CONF_THR: [0.001]
   LIST_VAL_IOU: [0.7, 0.5, 0.3]
   # This is for logging, change the iou threshold in 'utils/kitti_eval'
 
