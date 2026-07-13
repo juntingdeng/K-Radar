@@ -104,7 +104,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz)
+            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin)
         gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr)
     
         if args.gen_pretrained:
@@ -308,9 +308,9 @@ if __name__ == '__main__':
                                 # batch_dict['voxel_num_points'] = voxel_num_points[topN]
                     else:
                         # loss_gen = gen_loss(out, radar_st, lidar_st)
-                        occ_loss, mdn_nll, int_loss, tol_loss = gen_loss(out, radar_st, lidar_st)
-                        loss_gen = mdn_nll #gen_loss.w_occ * occ_loss + gen_loss.w_mdn * mdn_nll + gen_loss.w_int * int_loss #+ 0.2*tol_loss
-                        # print(f"occ_loss: {occ_loss.item()}, mdn_nll: {mdn_nll.item()}, int_loss: {int_loss.item()}, tol_loss: {tol_loss.item()}")
+                        occ_loss, mdn_nll, int_loss, tol_loss, stab_loss = gen_loss(out, radar_st, lidar_st)
+                        loss_gen = gen_loss.w_occ * occ_loss + gen_loss.w_mdn * mdn_nll + gen_loss.w_int * int_loss + gen_loss.w_stab * stab_loss #+ 0.2*tol_loss
+                        # print(f"occ_loss: {occ_loss.item()}, mdn_nll: {mdn_nll.item()}, int_loss: {int_loss.item()}, tol_loss: {tol_loss.item()}, stab_loss: {stab_loss.item()}")
 
                         # matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
                         # # gt_d: zyx

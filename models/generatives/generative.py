@@ -162,19 +162,90 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import math
+
+def _std_normal_cdf(x):
+    """Standard normal CDF Phi(x), used in Eq. (8)."""
+    return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 class SynthLocalLoss_MDN(nn.Module):
-    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, gt_topk=10, t_max=None, t_min=None, voxel_size=None):
+    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, w_stab=0.2, gt_topk=10, t_max=None, t_min=None, voxel_size=None, origin=None):
         super().__init__()
         self.w_occ = w_occ
         self.w_mdn = w_mdn
         self.w_int = w_int
+        self.w_stab = w_stab  # lambda in Eq. (17), weight on L_stab
         self.gt_topk = gt_topk
         self.bce = nn.BCEWithLogitsLoss()
         d = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.t_max = t_max.unsqueeze(0).unsqueeze(0).to(d) if t_max is not None else None
         self.t_min = t_min.unsqueeze(0).unsqueeze(0).to(d) if t_min else -self.t_max if t_max is not None else None
-        self.voxel_size = voxel_size
+        # origin (meters, xyz) and voxel_size (meters, xyz) are needed to recover the
+        # continuous fractional position rho of a matched LiDAR point within its voxel
+        # cell (Sec. III-B/C); without them the stability loss cannot be computed.
+        self.voxel_size = voxel_size.to(d) if voxel_size is not None else None
+        self.origin = origin.to(d) if origin is not None else None
+
+    def voxel_stability_loss(self, mu_m, log_sig_m, mix_logit_m, gt_offsets_m, gt_feat_m):
+        """
+        Stability-aware loss from Eq. (5)-(9).
+
+        For each matched (radar voxel n, candidate LiDAR point t), we check whether the
+        predicted continuous offset keeps the same voxel assignment as the candidate's
+        true continuous position, under the model's predicted offset-error distribution
+        (the Gaussian mixture emitted by the MDN head).
+
+        mu_m, log_sig_m: (M,K,3) predicted mixture means / log-std of the offset, voxel units, xyz
+        mix_logit_m:     (M,K,1) or (M,K) mixture logits
+        gt_offsets_m:    (M,T,3) integer part of o* (radar voxel index -> matched LiDAR voxel index), xyz
+        gt_feat_m:       (M,T,C) raw matched LiDAR point features (C = P*4, each point is [x,y,z,intensity] in meters)
+
+        Returns: scalar L_stab = E[1 - P_stab] (Eq. 9)
+        """
+        if self.origin is None or self.voxel_size is None:
+            return mu_m.sum() * 0.0
+
+        M, T, _ = gt_offsets_m.shape
+        C = gt_feat_m.shape[-1]
+        if C % 4 != 0:
+            return mu_m.sum() * 0.0
+
+        # ---- rho_d: fractional position of the true aligned point u* within its voxel cell ----
+        pts = gt_feat_m.view(M, T, C // 4, 4)                      # (M,T,P,4) xyz(m) + intensity
+        valid = (pts.abs().sum(dim=-1) > 0).float()                # padded point slots are all-zero
+        n_valid = valid.sum(dim=-1).clamp_min(1.0)                 # (M,T)
+        xyz_mean = (pts[..., :3] * valid.unsqueeze(-1)).sum(dim=2) / n_valid.unsqueeze(-1)  # (M,T,3) meters
+
+        u_star = (xyz_mean - self.origin.view(1, 1, 3)) / self.voxel_size.view(1, 1, 3)     # (M,T,3) voxel units
+        rho = u_star - torch.floor(u_star)                         # (M,T,3), rho in [0,1)^3
+
+        e_lo = -rho                                                 # e^L_d, Eq. (5)
+        e_hi = 1.0 - rho                                            # e^H_d, Eq. (5)
+        o_star = gt_offsets_m + rho                                 # true continuous offset, Eq. (1)
+
+        # ---- predicted mixture over the offset error e = o_hat - o* (Eq. 8) ----
+        sigma = torch.exp(log_sig_m).clamp_min(1e-3)                # (M,K,3)
+        if mix_logit_m.dim() == 3:
+            mix_logit_m = mix_logit_m.squeeze(-1)                   # (M,K)
+        pi = F.softmax(mix_logit_m, dim=1)                          # (M,K)
+
+        # e = o_hat - o*_t is a shift of the predicted offset distribution by -o*_t
+        mu_shift = mu_m.unsqueeze(1) - o_star.unsqueeze(2)          # (M,T,K,3)
+        sigma_b = sigma.unsqueeze(1)                                # (M,1,K,3) -> broadcast (M,T,K,3)
+        e_hi_b = e_hi.unsqueeze(2)                                  # (M,T,1,3)
+        e_lo_b = e_lo.unsqueeze(2)                                  # (M,T,1,3)
+
+        z_hi = (e_hi_b - mu_shift) / sigma_b
+        z_lo = (e_lo_b - mu_shift) / sigma_b
+        # per-axis independence assumption of Eq. (8), one factor per axis d
+        axis_prob = (_std_normal_cdf(z_hi) - _std_normal_cdf(z_lo)).clamp(0.0, 1.0)  # (M,T,K,3)
+        comp_prob = axis_prob.prod(dim=-1)                          # (M,T,K)
+
+        # mixture average over K components (generalizes Eq. 8 from a single Gaussian to the MDN mixture)
+        p_stab = (pi.unsqueeze(1) * comp_prob).sum(dim=-1)          # (M,T), Eq. (7)/(8)
+        r_inst = 1.0 - p_stab                                       # Eq. (9)
+
+        return r_inst.mean()
 
     @staticmethod
     def _mdn_log_prob(mu, log_sigma, mix_logit, y):
@@ -238,12 +309,9 @@ class SynthLocalLoss_MDN(nn.Module):
 
             log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
             logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
-            scale = torch.tensor([20, 20, 8], device=mu_m.device)
-            # scale = torch.tensor([21.2680, 28.4487, 7.7462], device=mu_m.device)
-            e = (y_m - mu_m)/scale
             y_mean = y_m.mean(1)
             mu_mean = mu_m.mean(1)
-            mdn_nll = ((y_mean - mu_mean) ** 2).mean() #torch.nn.functional.smooth_l1_loss(e, torch.zeros_like(e)) # ## #-(logp.mean())           #  #                 # scalar
+            mdn_nll = ((y_mean - mu_mean) ** 2).mean() # ## #-(logp.mean())           #  #                 # scalar
             
             # print(f"y_m: {y_mean[0].tolist()}, mu_m: {mu_mean[0].tolist()}")
             # print(f"std (xyz): y: {y_mean.std(0).tolist()}; mu: {mu_mean.std(0).tolist()}")
@@ -268,9 +336,14 @@ class SynthLocalLoss_MDN(nn.Module):
 
                 int_loss = (r * (pred_int_m - gt_int_m).abs()).mean()
 
+            # ---------- Stability-aware loss (Eq. 5-9) ----------
+            gt_feat_m = gt_feat[matched_mask]                                        # (M,T,C)
+            stab_loss = self.voxel_stability_loss(mu_m, ls_m, ml_m, y_m, gt_feat_m)
+
         else:
             mdn_nll = mu_off.sum() * 0.0
             int_loss = mdn_nll
+            stab_loss = mu_off.sum() * 0.0
 
         error = mu_m.mean(1) - y_m.mean(1)
         # print(f'mu: min: {torch.min(mu_m)}, max: {torch.max(mu_m)}, isnan: {torch.isnan(mu_m).any()}, isinf: {torch.isinf(mu_m).any()}')
@@ -286,7 +359,7 @@ class SynthLocalLoss_MDN(nn.Module):
         # tol_loss = (self.voxel_size*(abs(error) - self.t_max))**2 # not helpful at all: converting to meter 
         # # print(f'tol_loss_l: {tol_loss_l}, tol_loss_h: {tol_loss_h}')
         # return self.w_occ * occ_loss + self.w_mdn * mdn_nll + self.w_int * int_loss + 0.2*tol_loss.mean()
-        return occ_loss, mdn_nll, int_loss, tol_loss.mean()
+        return occ_loss, mdn_nll, int_loss, tol_loss.mean(), stab_loss
 
 import torch
 import torch.nn.functional as F
