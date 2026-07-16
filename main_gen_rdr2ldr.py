@@ -25,6 +25,7 @@ from models.generatives.generative import *
 
 from dataset_utils.KDataset import *
 from torch.amp import GradScaler
+from torch.utils.tensorboard import SummaryWriter
 from pipelines.pipeline_dect import Validate
 # from models.generatives.unet_utlis import *
 
@@ -53,6 +54,8 @@ def arg_parser():
     args.add_argument('--gen_pretrained_epoch', type=str, default=200)
     args.add_argument('--eps', type=float, default=0.5)
     args.add_argument('--gt_topk', default=100, type=int)
+    args.add_argument('--k_stab', default=1, type=int)
+    args.add_argument('--search_radius', default=5.0, type=float)
     args.add_argument('--set', default='train', type=str)
     return args.parse_args()
 
@@ -104,7 +107,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=0.2, w_mdn=1.0, w_int=1.0, gt_topk=args.gt_topk, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin)
+            gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=0.3, w_int=1.0, w_stab=2.0, gt_topk=args.gt_topk, k_stab=args.k_stab, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
         gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr)
     
         if args.gen_pretrained:
@@ -136,6 +139,7 @@ if __name__ == '__main__':
     os.makedirs(save_model_path, exist_ok=True)
     with open(os.path.join(log_path, 'args.txt'), 'w') as f:
         f.write(args_written)
+    tb_writer = SummaryWriter(log_dir=os.path.join(log_path, 'tensorboard'))
 
     scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
     n_epochs = args.nepochs
@@ -162,8 +166,12 @@ if __name__ == '__main__':
         ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True)
 
     else:
+        global_step = 0
         for ei in range(n_epochs):
-            rand_eps_ei = 1 #np.tanh(1e-4 * (ei - 0.5)**2) if ei%40 ==0 else rand_eps_ei #1-np.exp(-ei/10) 
+            # ramp the probability of feeding generated (vs. real) radar data to the detector
+            # from 0 up to rand_eps (--eps) as training progresses, so the detector relies
+            # more on the generator's output only once it has had time to learn.
+            rand_eps_ei = rand_eps * (1 - np.exp(-ei / 10))
             if args.gen_enable:
                 running_loss_gen = 0
                 gen_net.train()
@@ -247,6 +255,7 @@ if __name__ == '__main__':
                     if not args.mdn:
                         pred, occ, attrs = out['st'], out['logits'], out['attrs']
                         loss_gen = gen_loss(occ, attrs, pred, radar_st, lidar_st, R=5, origin=origin, vsize_xyz=vsize_xyz)
+                        running_loss_gen += loss_gen.detach().item()
                         offs = attrs[:, :, :3]
                         # print(f'offs: {offs}, ints: {ints}')
 
@@ -310,7 +319,17 @@ if __name__ == '__main__':
                         # loss_gen = gen_loss(out, radar_st, lidar_st)
                         occ_loss, mdn_nll, int_loss, tol_loss, stab_loss = gen_loss(out, radar_st, lidar_st)
                         loss_gen = gen_loss.w_occ * occ_loss + gen_loss.w_mdn * mdn_nll + gen_loss.w_int * int_loss + gen_loss.w_stab * stab_loss #+ 0.2*tol_loss
-                        # print(f"occ_loss: {occ_loss.item()}, mdn_nll: {mdn_nll.item()}, int_loss: {int_loss.item()}, tol_loss: {tol_loss.item()}, stab_loss: {stab_loss.item()}")
+                        running_loss_gen += loss_gen.detach().item()
+                        if bi == 0 and ei % 2 == 0:
+                            print(f"  [raw, unweighted] occ_loss:{occ_loss.item():.4f}, mdn_nll:{mdn_nll.item():.4f}, int_loss:{int_loss.item():.4f}, tol_loss:{tol_loss.item():.4f}, stab_loss:{stab_loss.item():.4f}")
+                        tb_writer.add_scalar('batch/occ_loss', occ_loss.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/mdn_nll', mdn_nll.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/int_loss', int_loss.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/stab_loss', stab_loss.detach().item(), global_step)
+                        if bi == 0:
+                            tb_writer.add_histogram('dist/log_sig_off', out['log_sig_off'].detach(), ei)
+                            if getattr(gen_loss, 'last_p_stab', None) is not None and gen_loss.last_p_stab.numel() > 0:
+                                tb_writer.add_histogram('dist/p_stab', gen_loss.last_p_stab, ei)
 
                         # matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
                         # # gt_d: zyx
@@ -359,10 +378,10 @@ if __name__ == '__main__':
                     # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
                     if args.gen_stop_early and ei >= args.gen_stop:
                         dect_opt.step()
-                        gen_opt.step()
                         scheduler.step()
                     else:
                         dect_opt.step()
+                        gen_opt.step()
                         scheduler.step()
                 else:
                     loss_dect = torch.tensor(0.)
@@ -370,6 +389,13 @@ if __name__ == '__main__':
                     loss_total.backward()
                     # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
                     gen_opt.step()
+
+                tb_writer.add_scalar('batch/loss_total', loss_total.detach().item(), global_step)
+                tb_writer.add_scalar('batch/loss_dect', loss_dect.detach().item(), global_step)
+                if args.gen_enable:
+                    tb_writer.add_scalar('batch/loss_gen', loss_gen.detach().item(), global_step)
+                tb_writer.add_scalar('batch/lr', scheduler.get_last_lr()[0], global_step)
+                global_step += 1
 
                 # for key, val in batch_dict.items():
                 #     if isinstance(val, torch.Tensor):
@@ -387,6 +413,9 @@ if __name__ == '__main__':
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
                 loss_dect_curve.append(running_loss_dect/(max(1, len(train_dataloader))))
+                tb_writer.add_scalar('epoch/loss_gen', loss_gen_curve[-1], ei)
+                tb_writer.add_scalar('epoch/loss_dect', loss_dect_curve[-1], ei)
+                tb_writer.add_scalar('epoch/rand_eps', rand_eps_ei, ei)
                 if (ei+1) % save_freq == 0:
                     dict_util = {
                         'epoch': ei+1,
@@ -403,6 +432,7 @@ if __name__ == '__main__':
             
             else:
                 loss_dect_curve.append(running_loss_dect/(max(1, len(train_dataloader))))
+                tb_writer.add_scalar('epoch/loss_dect', loss_dect_curve[-1], ei)
                 if (ei+1) % args.save_freq == 0:
                     dict_util = {
                         'epoch': ei+1,
@@ -417,11 +447,22 @@ if __name__ == '__main__':
                     torch.save(dict_util, os.path.join(save_model_path, f'epoch{ei+1}.pth'))
             
             if ei%2 == 0:
-                
+
                 if args.gen_enable:
                     print(f'epoch:{ei}, rand_eps_ei:{rand_eps_ei}, loss_gen:{loss_gen.detach().item():.4f}, loss_dect:{loss_dect.detach().item():.4f}, loss_total:{loss_total.detach().item():.4f}')
                 else:
                     print(f'epoch:{ei}, loss_dect:{loss_dect.detach().item():.4f}')
+
+            # periodic validation, following the same schedule convention as
+            # pipelines/pipeline_detection_v1_0.py (cfg.VAL.VAL_PER_EPOCH_SUBSET/FULL)
+            if ppl.is_validate:
+                if ppl.is_consider_subset:
+                    if (ei + 1) % ppl.val_per_epoch_subset == 0:
+                        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True)
+                if (ei + 1) % ppl.val_per_epoch_full == 0:
+                    ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
+
+            tb_writer.flush()
 
 
         ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
@@ -432,3 +473,4 @@ if __name__ == '__main__':
         plt.ylabel('Loss')
         plt.legend()
         plt.savefig(os.path.join(ppl.path_log, 'loss.png'))
+        tb_writer.close()
