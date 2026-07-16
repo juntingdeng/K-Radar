@@ -4,15 +4,22 @@ import spconv.pytorch as spconv
 from spconv.pytorch import SparseConvTensor, SubMConv3d, SparseConv3d, SparseInverseConv3d
 from models.generatives.unet import subm_block
 
-def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt_topk: int):
+def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt_topk: int, R=None):
     """
     For each radar voxel, find top-k closest LiDAR voxels (in voxel index space),
     per batch, and return offsets/features in clean shapes.
 
+    R: optional search radius (Euclidean, voxel-index units). Candidates farther than R
+       are excluded (Sec. IV-B: "local neighborhood of candidate LiDAR correspondences
+       ... within radius R"). If None, no radius filtering is applied.
+
     Returns:
-        matched_mask: (Nr,) bool
-        gt_offsets:   (Nr, topk, 3) float, (dz,dy,dx) in voxel units
-        gt_feat:      (Nr, topk, C_lidar) float, LiDAR features for each match
+        matched_mask:    (Nr,) bool, True iff at least one candidate is within R
+        gt_offsets:      (Nr, topk, 3) float, (dz,dy,dx) in voxel units
+        gt_feat:         (Nr, topk, C_lidar) float, LiDAR features for each candidate
+        gt_coords:       (Nr*topk, 4) matched LiDAR voxel indices
+        candidate_valid: (Nr, topk) bool, True where that candidate slot is a real,
+                          within-R match (False for padding or beyond-R candidates)
     """
     assert tuple(radar.spatial_shape) == tuple(lidar.spatial_shape)
     device = radar.indices.device
@@ -26,6 +33,8 @@ def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt
     matched_mask = torch.zeros(Nr, dtype=torch.bool, device=device)
     gt_offsets = torch.zeros((Nr, topk, 3), dtype=radar.features.dtype, device=device)
     gt_feat    = torch.zeros((Nr, topk, C_lidar), dtype=lidar.features.dtype, device=device)
+    gt_coords  = torch.zeros((Nr, topk, 4), dtype=l_idx.dtype, device=device)
+    candidate_valid = torch.zeros((Nr, topk), dtype=torch.bool, device=device)
 
     batch_ids = r_idx[:, 0].unique()
     for b in batch_ids:
@@ -42,19 +51,21 @@ def local_match_closest_mdn(radar: SparseConvTensor, lidar: SparseConvTensor, gt
         l_pos = l_idx[l_inds_b, 1:].to(torch.float32)
 
         dist = torch.cdist(r_pos, l_pos, p=2)         # (Nb_r, Nb_l)
-        _, nn_idx = torch.topk(dist, k=topk, dim=1, largest=False)  # (Nb_r, topk)
+        k = min(topk, l_inds_b.numel())
+        nn_dist, nn_idx = torch.topk(dist, k=k, dim=1, largest=False)  # (Nb_r, k)
 
-        l_rows = l_inds_b[nn_idx]                     # (Nb_r, topk)
+        l_rows = l_inds_b[nn_idx]                     # (Nb_r, k)
+        valid_b = (nn_dist <= R) if R is not None else torch.ones_like(nn_dist, dtype=torch.bool)
 
-        matched_mask[r_inds_b] = True
-        gt_feat[r_inds_b] = lidar.features[l_rows]    # (Nb_r, topk, C)
+        matched_mask[r_inds_b] = valid_b.any(dim=1)
+        gt_feat[r_inds_b, :k] = lidar.features[l_rows]    # (Nb_r, k, C)
 
-        # print(f"l_idx[l_rows, 1:]: {l_idx[l_rows, 1:]}, r_idx[r_inds_b, 1:]: {r_idx[r_inds_b, 1:]}")
-        offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1)).to(radar.features.dtype)  # (Nb_r, topk, 3)
-        gt_offsets[r_inds_b] = offs
-        gt_coords = l_idx[l_rows, :]
+        offs = (l_idx[l_rows, 1:] - r_idx[r_inds_b, 1:].unsqueeze(1)).to(radar.features.dtype)  # (Nb_r, k, 3)
+        gt_offsets[r_inds_b, :k] = offs
+        gt_coords[r_inds_b, :k] = l_idx[l_rows]
+        candidate_valid[r_inds_b, :k] = valid_b
 
-    return matched_mask, gt_offsets, gt_feat, gt_coords.reshape(-1, 4)
+    return matched_mask, gt_offsets, gt_feat, gt_coords.reshape(-1, 4), candidate_valid
 
 
 import torch
@@ -169,13 +180,14 @@ def _std_normal_cdf(x):
     return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 class SynthLocalLoss_MDN(nn.Module):
-    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, w_stab=0.2, gt_topk=10, t_max=None, t_min=None, voxel_size=None, origin=None):
+    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, w_stab=0.2, gt_topk=10, t_max=None, t_min=None, voxel_size=None, origin=None, R=None):
         super().__init__()
         self.w_occ = w_occ
         self.w_mdn = w_mdn
         self.w_int = w_int
         self.w_stab = w_stab  # lambda in Eq. (17), weight on L_stab
         self.gt_topk = gt_topk
+        self.R = R  # search radius (voxel units, Sec. IV-B); None disables radius filtering
         self.bce = nn.BCEWithLogitsLoss()
         d = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.t_max = t_max.unsqueeze(0).unsqueeze(0).to(d) if t_max is not None else None
@@ -186,7 +198,7 @@ class SynthLocalLoss_MDN(nn.Module):
         self.voxel_size = voxel_size.to(d) if voxel_size is not None else None
         self.origin = origin.to(d) if origin is not None else None
 
-    def voxel_stability_loss(self, mu_m, log_sig_m, mix_logit_m, gt_offsets_m, gt_feat_m):
+    def voxel_stability_loss(self, mu_m, log_sig_m, mix_logit_m, gt_offsets_m, gt_feat_m, candidate_mask=None):
         """
         Stability-aware loss from Eq. (5)-(9).
 
@@ -199,6 +211,8 @@ class SynthLocalLoss_MDN(nn.Module):
         mix_logit_m:     (M,K,1) or (M,K) mixture logits
         gt_offsets_m:    (M,T,3) integer part of o* (radar voxel index -> matched LiDAR voxel index), xyz
         gt_feat_m:       (M,T,C) raw matched LiDAR point features (C = P*4, each point is [x,y,z,intensity] in meters)
+        candidate_mask:  (M,T) bool, True where the candidate is a real within-R match;
+                          invalid (padding / beyond-R) candidates are excluded from the mean.
 
         Returns: scalar L_stab = E[1 - P_stab] (Eq. 9)
         """
@@ -245,6 +259,9 @@ class SynthLocalLoss_MDN(nn.Module):
         p_stab = (pi.unsqueeze(1) * comp_prob).sum(dim=-1)          # (M,T), Eq. (7)/(8)
         r_inst = 1.0 - p_stab                                       # Eq. (9)
 
+        if candidate_mask is not None:
+            mask = candidate_mask.float()
+            return (r_inst * mask).sum() / mask.sum().clamp_min(1.0)
         return r_inst.mean()
 
     @staticmethod
@@ -286,7 +303,7 @@ class SynthLocalLoss_MDN(nn.Module):
         occ_logit   = out_dict["occ_logit"]     # (N,K,1)
         mix_logit   = out_dict["mix_logit"]     # (N,K,1)
 
-        matched_mask, gt_offsets_zyx, gt_feat, gt_coords = local_match_closest_mdn(radar_st, lidar_st, self.gt_topk)
+        matched_mask, gt_offsets_zyx, gt_feat, gt_coords, candidate_valid = local_match_closest_mdn(radar_st, lidar_st, self.gt_topk, R=self.R)
         # matched_mask: (N,), gt_offsets: (N,topk,3) in zyx voxel units
         # print(f"gt_offsets_zyx: {gt_offsets_zyx}")
 
@@ -306,12 +323,16 @@ class SynthLocalLoss_MDN(nn.Module):
             ls_m   = log_sig_off[matched_mask]    # (M,K,3)
             ml_m   = mix_logit[matched_mask]      # (M,K,1)
             y_m    = gt_offsets_xyz[matched_mask] # (M,T,3)
+            cand_valid_m = candidate_valid[matched_mask]  # (M,T), True for real within-R candidates
 
             log_mix = self._mdn_log_prob(mu_m, ls_m, ml_m, y_m)     # (M,T)
             logp = torch.logsumexp(log_mix, dim=-1)       # (M,T)
             y_mean = y_m.mean(1)
             mu_mean = mu_m.mean(1)
-            mdn_nll = ((y_mean - mu_mean) ** 2).mean() # ## #-(logp.mean())           #  #                 # scalar
+            # true mixture NLL (Eq. 12): uses mu, log_sig, and mix_logit per candidate,
+            # averaged only over real within-R candidates (Sec. IV-B)
+            cand_mask_f = cand_valid_m.float()
+            mdn_nll = -(logp * cand_mask_f).sum() / cand_mask_f.sum().clamp_min(1.0)
             
             # print(f"y_m: {y_mean[0].tolist()}, mu_m: {mu_mean[0].tolist()}")
             # print(f"std (xyz): y: {y_mean.std(0).tolist()}; mu: {mu_mean.std(0).tolist()}")
@@ -334,11 +355,13 @@ class SynthLocalLoss_MDN(nn.Module):
                 pred_int_m = pred_int_m.unsqueeze(1)                   # (M,1,K)
                 gt_int_m   = gt_int_m.unsqueeze(-1)                    # (M,T,1)
 
-                int_loss = (r * (pred_int_m - gt_int_m).abs()).mean()
+                int_elem = r * (pred_int_m - gt_int_m).abs()                    # (M,T,K)
+                int_mask = cand_valid_m.unsqueeze(-1).float().expand_as(int_elem)  # (M,T,K)
+                int_loss = (int_elem * int_mask).sum() / int_mask.sum().clamp_min(1.0)
 
             # ---------- Stability-aware loss (Eq. 5-9) ----------
             gt_feat_m = gt_feat[matched_mask]                                        # (M,T,C)
-            stab_loss = self.voxel_stability_loss(mu_m, ls_m, ml_m, y_m, gt_feat_m)
+            stab_loss = self.voxel_stability_loss(mu_m, ls_m, ml_m, y_m, gt_feat_m, candidate_mask=cand_valid_m)
 
         else:
             mdn_nll = mu_off.sum() * 0.0
