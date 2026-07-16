@@ -155,7 +155,7 @@ class SparseUNet3D_MDN(nn.Module):
         feats = pred.features.view(N, K, 9)
 
         mu_off     = feats[:, :, 0:3]                 # (N,K,3) offsets in voxel units
-        log_sig_off= feats[:, :, 3:6].clamp(-5, 3)    # (N,K,3) stabilize
+        log_sig_off= feats[:, :, 3:6].clamp(-5, 1)    # (N,K,3) stabilize; keeps sigma <= ~e (voxel units) so L_stab keeps a usable gradient
         mu_int     = feats[:, :, 6:7]                 # (N,K,1)
         occ_logit  = feats[:, :, 7:8]                 # (N,K,1)
         mix_logit  = feats[:, :, 8:9]                 # (N,K,1)
@@ -180,13 +180,18 @@ def _std_normal_cdf(x):
     return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 class SynthLocalLoss_MDN(nn.Module):
-    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, w_stab=0.2, gt_topk=10, t_max=None, t_min=None, voxel_size=None, origin=None, R=None):
+    def __init__(self, w_occ=0.2, w_mdn=1.0, w_int=0.1, w_stab=0.2, gt_topk=10, k_stab=1, t_max=None, t_min=None, voxel_size=None, origin=None, R=None):
         super().__init__()
         self.w_occ = w_occ
         self.w_mdn = w_mdn
         self.w_int = w_int
         self.w_stab = w_stab  # lambda in Eq. (17), weight on L_stab
         self.gt_topk = gt_topk
+        # L_stab (Eq. 9) is defined w.r.t. the single true aligned point u*; averaging it
+        # over all gt_topk candidates (up to R voxels away) floors the loss near 1 since
+        # far candidates can never land inside the offset window. Restrict it to the
+        # nearest k_stab candidates (sorted ascending by local_match_closest_mdn) instead.
+        self.k_stab = k_stab
         self.R = R  # search radius (voxel units, Sec. IV-B); None disables radius filtering
         self.bce = nn.BCEWithLogitsLoss()
         d = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -260,8 +265,11 @@ class SynthLocalLoss_MDN(nn.Module):
         r_inst = 1.0 - p_stab                                       # Eq. (9)
 
         if candidate_mask is not None:
-            mask = candidate_mask.float()
-            return (r_inst * mask).sum() / mask.sum().clamp_min(1.0)
+            mask = candidate_mask.bool()
+            self.last_p_stab = p_stab[mask].detach()  # for TensorBoard histograms
+            mask_f = mask.float()
+            return (r_inst * mask_f).sum() / mask_f.sum().clamp_min(1.0)
+        self.last_p_stab = p_stab.detach()
         return r_inst.mean()
 
     @staticmethod
@@ -360,27 +368,33 @@ class SynthLocalLoss_MDN(nn.Module):
                 int_loss = (int_elem * int_mask).sum() / int_mask.sum().clamp_min(1.0)
 
             # ---------- Stability-aware loss (Eq. 5-9) ----------
+            # restrict to the k_stab nearest candidates only; see note in __init__
             gt_feat_m = gt_feat[matched_mask]                                        # (M,T,C)
-            stab_loss = self.voxel_stability_loss(mu_m, ls_m, ml_m, y_m, gt_feat_m, candidate_mask=cand_valid_m)
+            k_stab = min(self.k_stab, y_m.shape[1])
+            stab_loss = self.voxel_stability_loss(mu_m, ls_m, ml_m, y_m[:, :k_stab], gt_feat_m[:, :k_stab],
+                                                   candidate_mask=cand_valid_m[:, :k_stab])
+
+            error = mu_m.mean(1) - y_m.mean(1)
+            # print(f'mu: min: {torch.min(mu_m)}, max: {torch.max(mu_m)}, isnan: {torch.isnan(mu_m).any()}, isinf: {torch.isinf(mu_m).any()}')
+            # print(f'Y:  min: {torch.min(y_m)}, max: {torch.max(y_m)}, isnan: {torch.isnan(y_m).any()}, isinf: {torch.isinf(y_m).any()}')
+            # # effective but moderate performanc
+            # tol_loss_l = torch.relu(self.t_min - error)
+            # tol_loss_h = torch.relu(error - self.t_max)
+            # tol_loss = (tol_loss_l + tol_loss_h)**2
+
+            tol_loss = (abs(error) - self.t_max)**2 # effective but moderate performance
+            # print(f'min: {torch.min(error)}, max: {torch.max(error)}, isnan: {torch.isnan(error).any()}, isinf: {torch.isinf(error).any()}')
+            # tol_loss = torch.sqrt(t) # nan error
+            # tol_loss = (self.voxel_size*(abs(error) - self.t_max))**2 # not helpful at all: converting to meter
+            # # print(f'tol_loss_l: {tol_loss_l}, tol_loss_h: {tol_loss_h}')
 
         else:
             mdn_nll = mu_off.sum() * 0.0
             int_loss = mdn_nll
             stab_loss = mu_off.sum() * 0.0
+            tol_loss = mu_off.sum() * 0.0
+            self.last_p_stab = None
 
-        error = mu_m.mean(1) - y_m.mean(1)
-        # print(f'mu: min: {torch.min(mu_m)}, max: {torch.max(mu_m)}, isnan: {torch.isnan(mu_m).any()}, isinf: {torch.isinf(mu_m).any()}')
-        # print(f'Y:  min: {torch.min(y_m)}, max: {torch.max(y_m)}, isnan: {torch.isnan(y_m).any()}, isinf: {torch.isinf(y_m).any()}')
-        # # effective but moderate performanc
-        # tol_loss_l = torch.relu(self.t_min - error) 
-        # tol_loss_h = torch.relu(error - self.t_max)
-        # tol_loss = (tol_loss_l + tol_loss_h)**2
-
-        tol_loss = (abs(error) - self.t_max)**2 # effective but moderate performance
-        # print(f'min: {torch.min(error)}, max: {torch.max(error)}, isnan: {torch.isnan(error).any()}, isinf: {torch.isinf(error).any()}')
-        # tol_loss = torch.sqrt(t) # nan error
-        # tol_loss = (self.voxel_size*(abs(error) - self.t_max))**2 # not helpful at all: converting to meter 
-        # # print(f'tol_loss_l: {tol_loss_l}, tol_loss_h: {tol_loss_h}')
         # return self.w_occ * occ_loss + self.w_mdn * mdn_nll + self.w_int * int_loss + 0.2*tol_loss.mean()
         return occ_loss, mdn_nll, int_loss, tol_loss.mean(), stab_loss
 

@@ -215,7 +215,6 @@ if __name__ == '__main__':
             matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk)
         else:
             matched, gt_d, gt_f, gt_coords, _ = local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
-        matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
         gt_d_xyz = torch.flip(gt_d, dims=[-1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, z: {gt_d[:, :, 0].abs().mean().item()}, {gt_d[:, :, 0].abs().median().item()}, {gt_d[:, :, 0].abs().min().item()}, {gt_d[:, :, 0].abs().max().item()}')
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, y: {gt_d[:, :, 1].abs().mean().item()}, {gt_d[:, :, 1].abs().median().item()}, {gt_d[:, :, 1].abs().min().item()}, {gt_d[:, :, 1].abs().max().item()}')

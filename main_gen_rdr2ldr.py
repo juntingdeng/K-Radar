@@ -54,6 +54,7 @@ def arg_parser():
     args.add_argument('--gen_pretrained_epoch', type=str, default=200)
     args.add_argument('--eps', type=float, default=0.5)
     args.add_argument('--gt_topk', default=100, type=int)
+    args.add_argument('--k_stab', default=1, type=int)
     args.add_argument('--search_radius', default=5.0, type=float)
     args.add_argument('--set', default='train', type=str)
     return args.parse_args()
@@ -106,7 +107,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=0.3, w_int=1.0, w_stab=2.0, gt_topk=args.gt_topk, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
+            gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=0.3, w_int=1.0, w_stab=2.0, gt_topk=args.gt_topk, k_stab=args.k_stab, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
         gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr)
     
         if args.gen_pretrained:
@@ -321,6 +322,14 @@ if __name__ == '__main__':
                         running_loss_gen += loss_gen.detach().item()
                         if bi == 0 and ei % 2 == 0:
                             print(f"  [raw, unweighted] occ_loss:{occ_loss.item():.4f}, mdn_nll:{mdn_nll.item():.4f}, int_loss:{int_loss.item():.4f}, tol_loss:{tol_loss.item():.4f}, stab_loss:{stab_loss.item():.4f}")
+                        tb_writer.add_scalar('batch/occ_loss', occ_loss.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/mdn_nll', mdn_nll.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/int_loss', int_loss.detach().item(), global_step)
+                        tb_writer.add_scalar('batch/stab_loss', stab_loss.detach().item(), global_step)
+                        if bi == 0:
+                            tb_writer.add_histogram('dist/log_sig_off', out['log_sig_off'].detach(), ei)
+                            if getattr(gen_loss, 'last_p_stab', None) is not None and gen_loss.last_p_stab.numel() > 0:
+                                tb_writer.add_histogram('dist/p_stab', gen_loss.last_p_stab, ei)
 
                         # matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk) if not args.mdn else local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
                         # # gt_d: zyx
