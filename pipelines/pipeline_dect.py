@@ -105,6 +105,10 @@ class Validate:
         self.ldr_processor = LdrPreprocessor(cfg)
 
         self.voxel_size = torch.tensor(self.voxel_size).to(d)
+        # relative voxel size (z,y,x), normalized so the finest axis = 1; corrects
+        # anisotropic voxel grids so local_match_closest_mdn's nearest-candidate
+        # search treats a step along a coarser axis as farther, not equally close.
+        self.axis_scale = voxel_axis_scale(self.voxel_size)
 
     def set_validate(self):
         self.is_validate = True
@@ -131,8 +135,12 @@ class Validate:
             print('* Exception error: check VAL.REGARDING')
         ### Consider output of network and dataset ###
 
-    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, 
-                        is_print_memory=False, data_loader=None, save_res = False, delta_off_xyz=torch.tensor([10, 20, 30])):
+    def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False,
+                        is_print_memory=False, data_loader=None, save_res = False, delta_off_xyz=None):
+        # delta_off_xyz: only for the Sec. V-D / Fig. 7 calibration-error sensitivity sweep
+        # (main_gen_rdr2ldr_offsets.py passes an explicit tensor here). Leave it None for
+        # normal validation, which uses the model's own predicted mu_off directly instead of
+        # overwriting it with ground truth + an injected offset.
         # self.network.eval()
         # if self.gen_net:
             # self.gen_net.eval()
@@ -426,10 +434,18 @@ class Validate:
 
                 else:
                     offs, occ = out['mu_off'], out['occ_logit']
-                    matched, gt_d, gt_f, gt_coords, _ = local_match_closest_mdn(radar_st, lidar_st, gt_topk=100)
-                        # gt_d: zyx
-                    out['mu_off'] = torch.flip(gt_d, dims=[-1]) + delta_off_xyz.to(gt_d.device).unsqueeze(0).unsqueeze(0)
-                    # print(f"\n torch.flip(gt_d, dims=[-1]): {torch.flip(gt_d, dims=[-1])}, out['mu_off']:{out['mu_off']}")
+                    if delta_off_xyz is not None:
+                        # Sec. V-D / Fig. 7 calibration-error sensitivity sweep only: replace
+                        # the model's own predicted mu_off with the true continuous ground-truth
+                        # offset o* = integer offset + rho (Eq. 1), then add the deliberately
+                        # injected miscalibration delta_off_xyz, to measure how detection
+                        # degrades as injected offset error grows. Skipped for normal
+                        # validation (delta_off_xyz=None), which uses the model's own mu_off.
+                        matched, gt_d, gt_f, gt_coords, _ = local_match_closest_mdn(radar_st, lidar_st, gt_topk=100, axis_scale=self.axis_scale)
+                        gt_d_xyz = torch.flip(gt_d, dims=[-1])
+                        o_star, _, _ = compute_continuous_offset(gt_d_xyz, gt_f, self.origin, self.voxel_size)
+                        out['mu_off'] = o_star + delta_off_xyz.to(gt_d.device).unsqueeze(0).unsqueeze(0)
+                        # print(f"\n o_star: {o_star}, out['mu_off']:{out['mu_off']}")
 
                     attrs_pts, voxel_coords, voxel_num_points, chosen_k, probk, mu = sample_points_from_mdn(
                                                                                         pred_st=out['st'],

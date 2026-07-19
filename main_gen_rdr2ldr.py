@@ -378,11 +378,9 @@ if __name__ == '__main__':
                     # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
                     if args.gen_stop_early and ei >= args.gen_stop:
                         dect_opt.step()
-                        scheduler.step()
                     else:
                         dect_opt.step()
                         gen_opt.step()
-                        scheduler.step()
                 else:
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen
@@ -409,6 +407,10 @@ if __name__ == '__main__':
                 for temp_key in batch_dict.keys():
                     batch_dict[temp_key] = None
 
+            # CosineAnnealingLR's T_max is in epochs (T_max=args.nepochs), so step it once
+            # per epoch here, not per batch above (stepping ~100x/epoch made the schedule
+            # complete a full anneal every ~3 epochs and then oscillate for the rest of training).
+            scheduler.step()
 
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))

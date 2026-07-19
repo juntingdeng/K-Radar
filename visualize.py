@@ -214,11 +214,19 @@ if __name__ == '__main__':
         if not args.mdn:
             matched, gt_d, gt_f, gt_coords = local_match_closest(radar_st, lidar_st, gt_topk=args.gt_topk)
         else:
-            matched, gt_d, gt_f, gt_coords, _ = local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk)
+            # axis_scale corrects nearest-candidate search for anisotropic voxel grids
+            # (Sec. IV-B "local neighborhood"), consistent with SynthLocalLoss_MDN.
+            matched, gt_d, gt_f, gt_coords, _ = local_match_closest_mdn(radar_st, lidar_st, gt_topk=args.gt_topk, axis_scale=voxel_axis_scale(vsize_xyz))
         gt_d_xyz = torch.flip(gt_d, dims=[-1]) #gt_d: zyx -> xyz
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, z: {gt_d[:, :, 0].abs().mean().item()}, {gt_d[:, :, 0].abs().median().item()}, {gt_d[:, :, 0].abs().min().item()}, {gt_d[:, :, 0].abs().max().item()}')
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, y: {gt_d[:, :, 1].abs().mean().item()}, {gt_d[:, :, 1].abs().median().item()}, {gt_d[:, :, 1].abs().min().item()}, {gt_d[:, :, 1].abs().max().item()}')
         print(f'gt_d: {gt_d.shape}, gt_f:{gt_f.shape}, x: {gt_d[:, :, 2].abs().mean().item()}, {gt_d[:, :, 2].abs().median().item()}, {gt_d[:, :, 2].abs().min().item()}, {gt_d[:, :, 2].abs().max().item()}')
+        if args.mdn:
+            # o_star = gt_d_xyz + rho (Eq. 1): the true continuous offset, matching what
+            # SynthLocalLoss_MDN now trains mu_off against (integer-only gt_d misses the
+            # sub-voxel fractional position rho that the stability analysis depends on).
+            o_star_xyz, _, _ = compute_continuous_offset(gt_d_xyz, gt_f, origin, vsize_xyz)
+            print(f'o_star (continuous): z: {o_star_xyz[:, :, 2].abs().mean().item():.4f}, y: {o_star_xyz[:, :, 1].abs().mean().item():.4f}, x: {o_star_xyz[:, :, 0].abs().mean().item():.4f}')
 
         rdr_features = rdr_data[:, 0, :3]
         ids = (rdr_features != 0).any(dim=1)      # boolean mask
