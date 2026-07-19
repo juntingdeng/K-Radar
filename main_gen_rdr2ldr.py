@@ -89,8 +89,8 @@ if __name__ == '__main__':
     
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
-    train_dataloader = DataLoader(train_kdataset, batch_size=bs, 
-                                  collate_fn=train_kdataset.collate_fn, num_workers=0, shuffle=False)
+    train_dataloader = DataLoader(train_kdataset, batch_size=bs,
+                                  collate_fn=train_kdataset.collate_fn, num_workers=0, shuffle=True)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
     test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
@@ -184,7 +184,6 @@ if __name__ == '__main__':
             
             for bi, batch_dict in enumerate(train_dataloader):
                 # print(f'ei:{ei}, bi:{bi}')
-                if bi > 100: break
                 if args.gen_enable:
                     gen_opt.zero_grad()
                     batch_dict = rdr_processor.forward(batch_dict)
