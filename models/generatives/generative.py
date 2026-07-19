@@ -93,11 +93,17 @@ class SparseUNet3D_MDN(nn.Module):
       - mu (K,3), log_sigma (K,3), mix_logits (K,1)
       - optional: intensity mean (K,1), occupancy logit (K,1)
     """
-    def __init__(self, in_ch=20, base_ch=32, K=5, t_max=None):
+    def __init__(self, in_ch=20, base_ch=32, K=5, t_max=None, log_sig_max=1.0):
         super().__init__()
         C = base_ch
         self.K = K
         self.t_max = t_max.unsqueeze(0).unsqueeze(0) if t_max is not None else None
+        # upper bound on log_sig_off (lower bound stays fixed at -5, see forward()); the
+        # training loop anneals this down each epoch (see main_gen_rdr2ldr.py) from a loose
+        # starting value toward a tight target, instead of clamping hard from step 0, so mu
+        # has time to improve incrementally as the ceiling tightens rather than being thrown
+        # into a much harder loss landscape all at once.
+        self.log_sig_max = log_sig_max
 
         # ---------------- Encoder ----------------
         self.enc0 = subm_block(in_ch, C, indice_key="subm0")
@@ -167,7 +173,7 @@ class SparseUNet3D_MDN(nn.Module):
         feats = pred.features.view(N, K, 9)
 
         mu_off     = feats[:, :, 0:3]                 # (N,K,3) offsets in voxel units
-        log_sig_off= feats[:, :, 3:6].clamp(-5, 1)    # (N,K,3) stabilize; keeps sigma <= ~e (voxel units) so L_stab keeps a usable gradient
+        log_sig_off= feats[:, :, 3:6].clamp(-5, self.log_sig_max)    # (N,K,3) stabilize; self.log_sig_max is annealed
         mu_int     = feats[:, :, 6:7]                 # (N,K,1)
         occ_logit  = feats[:, :, 7:8]                 # (N,K,1)
         mix_logit  = feats[:, :, 8:9]                 # (N,K,1)

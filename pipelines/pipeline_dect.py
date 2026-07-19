@@ -15,6 +15,7 @@ from torch.utils.data import Subset
 import random
 import pickle
 import copy
+import traceback
 
 # Ingnore numba warning
 from numba.core.errors import NumbaWarning
@@ -136,11 +137,16 @@ class Validate:
         ### Consider output of network and dataset ###
 
     def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False,
-                        is_print_memory=False, data_loader=None, save_res = False, delta_off_xyz=None):
+                        is_print_memory=False, data_loader=None, save_res = False, delta_off_xyz=None,
+                        split_name=''):
         # delta_off_xyz: only for the Sec. V-D / Fig. 7 calibration-error sensitivity sweep
         # (main_gen_rdr2ldr_offsets.py passes an explicit tensor here). Leave it None for
         # normal validation, which uses the model's own predicted mu_off directly instead of
         # overwriting it with ground truth + an injected offset.
+        # split_name: optional tag (e.g. 'train'/'test') distinguishing which data_loader was
+        # passed in -- output paths are otherwise keyed only by (epoch, is_subset), so calling
+        # this twice for the same epoch with different data_loaders would silently overwrite
+        # each other's preds/gts/desc files without it.
         # self.network.eval()
         # if self.gen_net:
             # self.gen_net.eval()
@@ -180,10 +186,11 @@ class Validate:
         #         batch_size = 1, shuffle = is_shuffle, collate_fn = self.dataset_test.collate_fn, \
         #         num_workers = self.cfg.OPTIMIZER.NUM_WORKERS)
         
+        split_suffix = f'_{split_name}' if split_name else ''
         if epoch is None:
-            dir_epoch = 'none'
+            dir_epoch = 'none' + split_suffix
         else:
-            dir_epoch = f'epoch_{epoch}_subset' if is_subset else f'epoch_{epoch}_total'
+            dir_epoch = (f'epoch_{epoch}_subset' if is_subset else f'epoch_{epoch}_total') + split_suffix
 
         # initialize via VAL.LIST_VAL_CONF_THR
         path_dir = os.path.join(self.path_log, 'test_kitti', dir_epoch)
@@ -275,7 +282,6 @@ class Validate:
                 desc_dir_list.append(desc_dir)
                 split_path_list.append(split_path)
 
-        self.val_num_subset = 1
         # Creating gts and preds txt files for evaluation
         for idx_datum, dict_datum in enumerate(data_loader):
             if is_subset:
@@ -750,8 +756,9 @@ class Validate:
                                 f.write(str(det3d) + ' ')
                             f.write('\n\n')
                     print('\n')
-                except:
-                    # print('* Exception error (Pipeline): Samples for the codition are not found')
+                except Exception:
+                    print(f'* Exception error (Pipeline): eval failed for conf_thr={conf_thr}, condition={condition}')
+                    traceback.print_exc()
                     continue
 
         path_check = os.path.join(path_dir, 'Conf_thr', 'complete_results.txt')

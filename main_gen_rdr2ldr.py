@@ -39,6 +39,7 @@ def arg_parser():
     args.add_argument('--nepochs', type=int, default=300)
     args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
+    args.add_argument('--lr_gen', type=float, default=2e-4)
     args.add_argument('--dect_start_late', action='store_true')
     args.add_argument('--dect_start', type=int, default=100)
 
@@ -56,6 +57,9 @@ def arg_parser():
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--k_stab', default=1, type=int)
     args.add_argument('--search_radius', default=5.0, type=float)
+    args.add_argument('--log_sig_max_start', default=1.0, type=float)
+    args.add_argument('--log_sig_max_end', default=-0.5, type=float)
+    args.add_argument('--log_sig_anneal_epochs', default=50, type=int)
     args.add_argument('--set', default='train', type=str)
     return args.parse_args()
 
@@ -108,7 +112,7 @@ if __name__ == '__main__':
         else:
             gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
             gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=0.3, w_int=1.0, w_stab=2.0, gt_topk=args.gt_topk, k_stab=args.k_stab, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
-        gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr)
+        gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr_gen)
     
         if args.gen_pretrained:
             if not args.mdn:
@@ -142,6 +146,11 @@ if __name__ == '__main__':
     tb_writer = SummaryWriter(log_dir=os.path.join(log_path, 'tensorboard'))
 
     scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
+    # decoupled from dect_opt's LR/schedule: the MDN offset head's loss landscape narrows
+    # as log_sig_max anneals down (Eq. 8's curvature w.r.t. mu scales like 1/sigma^2), so
+    # gen_opt needs its own (lower, independently-decaying) LR rather than sharing dect_opt's,
+    # or mu's optimization can overshoot/oscillate once the landscape gets narrow enough.
+    scheduler_gen = CosineAnnealingLR(gen_opt, T_max=args.nepochs) if args.gen_enable else None
     n_epochs = args.nepochs
     save_freq = args.save_freq
     mseloss = nn.MSELoss(reduction='mean')
@@ -175,6 +184,16 @@ if __name__ == '__main__':
             if args.gen_enable:
                 running_loss_gen = 0
                 gen_net.train()
+
+                if args.mdn:
+                    # anneal the log_sig_off ceiling from a loose start down to a tight
+                    # target over log_sig_anneal_epochs, instead of clamping tight from
+                    # step 0 -- gives mu time to improve incrementally as the ceiling
+                    # tightens, rather than facing the harder (tightly-clamped) loss
+                    # landscape all at once.
+                    anneal_frac = max(0.0, 1.0 - ei / args.log_sig_anneal_epochs)
+                    gen_net.log_sig_max = args.log_sig_max_end + (args.log_sig_max_start - args.log_sig_max_end) * anneal_frac
+                    tb_writer.add_scalar('epoch/log_sig_max', gen_net.log_sig_max, ei)
 
                 if args.gen_stop_early and ei >=args.gen_stop:
                     gen_net.eval()
@@ -392,6 +411,8 @@ if __name__ == '__main__':
                 if args.gen_enable:
                     tb_writer.add_scalar('batch/loss_gen', loss_gen.detach().item(), global_step)
                 tb_writer.add_scalar('batch/lr', scheduler.get_last_lr()[0], global_step)
+                if args.gen_enable:
+                    tb_writer.add_scalar('batch/lr_gen', scheduler_gen.get_last_lr()[0], global_step)
                 global_step += 1
 
                 # for key, val in batch_dict.items():
@@ -410,6 +431,8 @@ if __name__ == '__main__':
             # per epoch here, not per batch above (stepping ~100x/epoch made the schedule
             # complete a full anneal every ~3 epochs and then oscillate for the rest of training).
             scheduler.step()
+            if args.gen_enable:
+                scheduler_gen.step()
 
             if args.gen_enable:
                 loss_gen_curve.append(running_loss_gen/(max(1, len(train_dataloader))))
@@ -417,6 +440,7 @@ if __name__ == '__main__':
                 tb_writer.add_scalar('epoch/loss_gen', loss_gen_curve[-1], ei)
                 tb_writer.add_scalar('epoch/loss_dect', loss_dect_curve[-1], ei)
                 tb_writer.add_scalar('epoch/rand_eps', rand_eps_ei, ei)
+                tb_writer.add_scalar('epoch/lr_gen', scheduler_gen.get_last_lr()[0], ei)
                 if (ei+1) % save_freq == 0:
                     dict_util = {
                         'epoch': ei+1,
@@ -425,6 +449,7 @@ if __name__ == '__main__':
                         'gen_opt_state_dict': gen_opt.state_dict(),
                         'dect_opt_state_dict': dect_opt.state_dict(),
                         'lr': scheduler.get_last_lr(),
+                        'lr_gen': scheduler_gen.get_last_lr(),
                         'loss_gen': loss_gen.detach().item(),
                         'loss_dect': loss_dect.detach().item()
                     }
@@ -456,17 +481,26 @@ if __name__ == '__main__':
 
             # periodic validation, following the same schedule convention as
             # pipelines/pipeline_detection_v1_0.py (cfg.VAL.VAL_PER_EPOCH_SUBSET/FULL)
+            ran_final_full_validation = False
             if ppl.is_validate:
                 if ppl.is_consider_subset:
                     if (ei + 1) % ppl.val_per_epoch_subset == 0:
                         ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True)
                 if (ei + 1) % ppl.val_per_epoch_full == 0:
                     ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
+                    ran_final_full_validation = (ei == n_epochs - 1)
 
             tb_writer.flush()
 
 
-        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
+        # skip if the periodic full-validation above already covered this exact epoch
+        # (n_epochs a multiple of VAL_PER_EPOCH_FULL) -- avoids re-running the identical
+        # full-dataset pass twice back to back
+        if not ran_final_full_validation:
+            ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
+        # train_dataloader above only measures train-set fit; also report true held-out
+        # generalization on the test split at the end of training
+        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, split_name='test')
         if args.gen_enable:
             plt.plot(loss_gen_curve, label='gen-loss')
         # plt.plot(loss_gen_curve, label='dect-loss')
