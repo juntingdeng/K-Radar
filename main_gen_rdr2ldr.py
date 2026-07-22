@@ -59,7 +59,7 @@ def arg_parser():
     args.add_argument('--search_radius', default=5.0, type=float)
     args.add_argument('--log_sig_max_start', default=1.0, type=float)
     args.add_argument('--log_sig_max_end', default=-0.5, type=float)
-    args.add_argument('--log_sig_anneal_epochs', default=100, type=int)
+    args.add_argument('--log_sig_anneal_epochs', default=50, type=int)
     args.add_argument('--w_mdn', default=0.3, type=float)
     args.add_argument('--w_stab_start', default=0.0, type=float)
     args.add_argument('--w_stab_end', default=2.0, type=float)
@@ -151,6 +151,26 @@ if __name__ == '__main__':
         f.write(args_written)
     tb_writer = SummaryWriter(log_dir=os.path.join(log_path, 'tensorboard'))
 
+    def log_eval_summary(dict_summary, tag, ei):
+        # dict_summary: {conf_thr: {cls_name: {'bev':.., '3d':.., 'num_frames':.., 'num_gt_obj':.., 'num_dt_obj':..}}}
+        # from Validate.validate_kitti_conditional's 'all' condition. Logs a per-epoch curve
+        # per class (eval_train/* or eval_test/*) plus a mean-over-classes curve, instead of
+        # mAP only ever existing as printed text / complete_results.txt.
+        if not dict_summary:
+            return
+        for conf_thr, dict_cls in dict_summary.items():
+            bevs, threeds = [], []
+            for cls_name, metrics in dict_cls.items():
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_bev', metrics['bev'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_3d', metrics['3d'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_num_gt_obj', metrics['num_gt_obj'], ei)
+                bevs.append(metrics['bev'])
+                threeds.append(metrics['3d'])
+            if bevs:
+                tb_writer.add_scalar(f'eval_{tag}/mean_bev', sum(bevs) / len(bevs), ei)
+                tb_writer.add_scalar(f'eval_{tag}/mean_3d', sum(threeds) / len(threeds), ei)
+                tb_writer.add_scalar(f'eval_{tag}/num_frames', next(iter(dict_cls.values()))['num_frames'], ei)
+
     scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
     # decoupled from dect_opt's LR/schedule: the MDN offset head's loss landscape narrows
     # as log_sig_max anneals down (Eq. 8's curvature w.r.t. mu scales like 1/sigma^2), so
@@ -178,7 +198,8 @@ if __name__ == '__main__':
         print(f'dect_net.training: {dect_net.training}')
         print(f"/////dect_loss: {model_load['loss_dect']}")
         dl = test_dataloader if args.set == 'test' else train_dataloader
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True, split_name=args.set)
+        summary = ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True, split_name=args.set)
+        log_eval_summary(summary, args.set, 0)
 
     else:
         global_step = 0
@@ -503,9 +524,15 @@ if __name__ == '__main__':
             if ppl.is_validate:
                 if ppl.is_consider_subset:
                     if (ei + 1) % ppl.val_per_epoch_subset == 0:
-                        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True, split_name='train')
+                        summary = ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True, split_name='train')
+                        log_eval_summary(summary, 'train', ei)
+                        # also track on the held-out test split, on the same cadence, so the
+                        # eval curve isn't only ever measuring train-set fit
+                        summary = ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, is_subset=True, split_name='test')
+                        log_eval_summary(summary, 'test', ei)
                 if (ei + 1) % ppl.val_per_epoch_full == 0:
-                    ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
+                    summary = ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
+                    log_eval_summary(summary, 'train', ei)
                     ran_final_full_validation = (ei == n_epochs - 1)
 
             tb_writer.flush()
@@ -515,10 +542,12 @@ if __name__ == '__main__':
         # (n_epochs a multiple of VAL_PER_EPOCH_FULL) -- avoids re-running the identical
         # full-dataset pass twice back to back
         if not ran_final_full_validation:
-            ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
+            summary = ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
+            log_eval_summary(summary, 'train', ei)
         # train_dataloader above only measures train-set fit; also report true held-out
         # generalization on the test split at the end of training
-        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, split_name='test')
+        summary = ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=test_dataloader, split_name='test')
+        log_eval_summary(summary, 'test', ei)
         if args.gen_enable:
             plt.plot(loss_gen_curve, label='gen-loss')
         # plt.plot(loss_gen_curve, label='dect-loss')

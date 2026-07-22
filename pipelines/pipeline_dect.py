@@ -713,6 +713,10 @@ class Validate:
         tqdm_bar.close()
 
         ### Validate per conf ###
+        # summary of the 'all' condition only, one mean-AP number per class -- returned so
+        # callers can log it as a scalar (e.g. a per-epoch mAP curve), instead of results
+        # only ever living in printed text / complete_results.txt
+        dict_summary = {}
         all_condition_list = ['all'] + road_cond_list + time_cond_list + weather_cond_list
         for conf_thr in list_conf_thr:
             for condition in all_condition_list:
@@ -758,6 +762,15 @@ class Validate:
                             num_gt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in gt_annos))
                             num_dt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in dt_annos))
 
+                            if condition == 'all':
+                                dict_summary.setdefault(conf_thr, {})[dic_metric['cls']] = {
+                                    'bev': float(np.mean(dic_metric['bev'])),
+                                    '3d': float(np.mean(dic_metric['3d'])),
+                                    'num_frames': num_frames,
+                                    'num_gt_obj': num_gt_obj,
+                                    'num_dt_obj': num_dt_obj,
+                                }
+
                             print('='*50)
                             print('Cls: ', dic_metric['cls'], f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})')
                             print('IoU:', dic_metric['iou'])
@@ -788,3 +801,4 @@ class Validate:
         for conf_thr in list_conf_thr:
             print(f'* Check {os.path.join(path_dir, f"{conf_thr}", "complete_results.txt")}')
         ### Validate per conf ###
+        return dict_summary
