@@ -603,6 +603,13 @@ class Validate:
                             
                             if score > conf_thr:
                                 cls_idx = int(np.round(pred_labels[idx_pred]))
+                                # pred_labels is a raw (unclamped) regression output; a
+                                # not-yet-converged model can round to <=0 or >len(class_names).
+                                # class_names[cls_idx-1] would silently wrap around (Python
+                                # negative indexing) for cls_idx<=0 instead of raising, so this
+                                # has to be checked explicitly rather than relying on IndexError.
+                                if not (1 <= cls_idx <= len(class_names)):
+                                    continue
                                 cls_name = class_names[cls_idx-1]
                                 list_pp_bbox.append([score, x, y, z, l, w, h, th])
                                 list_pp_cls.append(cls_idx)
@@ -719,6 +726,16 @@ class Validate:
                     dt_annos = kitti.get_label_annos(preds_dir)
                     val_ids = read_imageset_file(split_path)
                     gt_annos = kitti.get_label_annos(labels_dir, val_ids)
+                    if len(dt_annos) == 0 or len(gt_annos) == 0:
+                        # no samples with GT objects landed in this condition/threshold slice
+                        # (e.g. a narrow weather/road/time category with zero matches in this
+                        # single-sequence dataset) -- nothing was written to preds_dir/labels_dir
+                        # for it, so there is nothing to evaluate. Expected/benign, not an error:
+                        # calculate_iou_partly's np.stack([...], 0) would otherwise raise
+                        # "need at least one array to stack" on an empty dt_annos/gt_annos.
+                        print(f'* Skip eval (no samples): conf_thr={conf_thr}, condition={condition}')
+                        continue
+                    num_frames = len(gt_annos)  # same sample set for every class below
                     list_metrics = []
                     list_results = []
                     for idx_cls_val in self.list_val_care_idx:
@@ -731,18 +748,25 @@ class Validate:
                         # print(f'conf_thr: {conf_thr}, dict_metrics: {dict_metrics}')
                         list_metrics.append(dict_metrics)
                         list_results.append(result)
-                    print('Conf thr: ', str(conf_thr), ', Condition: ', condition)
+                    print('Conf thr: ', str(conf_thr), ', Condition: ', condition, ', Frames: ', num_frames)
                     with open(os.path.join(path_dir, f'{conf_thr}', 'complete_results.txt'), 'a') as f:
                         for dic_metric in list_metrics:
+                            # object counts for the class this metric is for -- an AP computed
+                            # over a handful of boxes (or one) is easy to misread as a strong
+                            # result, so surface the sample size it's actually based on
+                            cls_lower = dic_metric['cls'].lower()
+                            num_gt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in gt_annos))
+                            num_dt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in dt_annos))
+
                             print('='*50)
-                            print('Cls: ', dic_metric['cls'])
+                            print('Cls: ', dic_metric['cls'], f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})')
                             print('IoU:', dic_metric['iou'])
                             print('BEV: ', dic_metric['bev'])
                             print('3D: ', dic_metric['3d'])
                             print('-'*50)
-                            
+
                             f.write('Conf thr: ' + str(conf_thr) +  ', Condition: ' + condition + '\n')
-                            f.write('cls: ' + dic_metric['cls'] + '\n')
+                            f.write('cls: ' + dic_metric['cls'] + f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})' + '\n')
                             f.write('iou: ')
                             for iou in dic_metric['iou']:
                                 f.write(str(iou) + ' ')
@@ -761,6 +785,6 @@ class Validate:
                     traceback.print_exc()
                     continue
 
-        path_check = os.path.join(path_dir, 'Conf_thr', 'complete_results.txt')
-        print(f'* Check {path_check}')
+        for conf_thr in list_conf_thr:
+            print(f'* Check {os.path.join(path_dir, f"{conf_thr}", "complete_results.txt")}')
         ### Validate per conf ###

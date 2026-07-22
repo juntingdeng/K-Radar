@@ -59,7 +59,13 @@ def arg_parser():
     args.add_argument('--search_radius', default=5.0, type=float)
     args.add_argument('--log_sig_max_start', default=1.0, type=float)
     args.add_argument('--log_sig_max_end', default=-0.5, type=float)
-    args.add_argument('--log_sig_anneal_epochs', default=50, type=int)
+    args.add_argument('--log_sig_anneal_epochs', default=100, type=int)
+    args.add_argument('--w_mdn', default=0.3, type=float)
+    args.add_argument('--w_stab_start', default=0.0, type=float)
+    args.add_argument('--w_stab_end', default=2.0, type=float)
+    args.add_argument('--w_stab_anneal_epochs', default=50, type=int)
+    args.add_argument('--grad_clip_gen', default=5.0, type=float)
+    args.add_argument('--grad_clip_dect', default=5.0, type=float)
     args.add_argument('--set', default='train', type=str)
     return args.parse_args()
 
@@ -111,7 +117,7 @@ if __name__ == '__main__':
             gen_loss = SynthLocalLoss(w_occ=0.2, w_off=1.0, w_feat=1.0, gt_topk=args.gt_topk)
         else:
             gen_net = SparseUNet3D_MDN(in_ch=4*cfg.MODEL.PRE_PROCESSING.MAX_POINTS_PER_VOXEL, t_max=torch.tensor([5, 5, 2])).to(d)
-            gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=0.3, w_int=1.0, w_stab=2.0, gt_topk=args.gt_topk, k_stab=args.k_stab, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
+            gen_loss = SynthLocalLoss_MDN(w_occ=1.0, w_mdn=args.w_mdn, w_int=1.0, w_stab=args.w_stab_start, gt_topk=args.gt_topk, k_stab=args.k_stab, t_max=torch.tensor([5, 5, 2]), voxel_size=vsize_xyz, origin=origin, R=args.search_radius)
         gen_opt = optim.Adam(gen_net.parameters(), lr=args.lr_gen)
     
         if args.gen_pretrained:
@@ -172,7 +178,7 @@ if __name__ == '__main__':
         print(f'dect_net.training: {dect_net.training}')
         print(f"/////dect_loss: {model_load['loss_dect']}")
         dl = test_dataloader if args.set == 'test' else train_dataloader
-        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True)
+        ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True, split_name=args.set)
 
     else:
         global_step = 0
@@ -194,6 +200,14 @@ if __name__ == '__main__':
                     anneal_frac = max(0.0, 1.0 - ei / args.log_sig_anneal_epochs)
                     gen_net.log_sig_max = args.log_sig_max_end + (args.log_sig_max_start - args.log_sig_max_end) * anneal_frac
                     tb_writer.add_scalar('epoch/log_sig_max', gen_net.log_sig_max, ei)
+
+                    # anneal w_stab up from 0, mirroring log_sig_max's ramp down -- lets
+                    # mdn_nll get first priority on improving mu before stab_loss starts
+                    # competing for gradient budget against int_loss/occ_loss, instead of
+                    # both objectives fighting for priority from step 0 while mu is still bad.
+                    anneal_frac_wstab = max(0.0, 1.0 - ei / args.w_stab_anneal_epochs)
+                    gen_loss.w_stab = args.w_stab_end + (args.w_stab_start - args.w_stab_end) * anneal_frac_wstab
+                    tb_writer.add_scalar('epoch/w_stab', gen_loss.w_stab, ei)
 
                 if args.gen_stop_early and ei >=args.gen_stop:
                     gen_net.eval()
@@ -392,8 +406,12 @@ if __name__ == '__main__':
                     
                     loss_total = loss_dect if args.gen_stop_early and ei >= args.gen_stop else loss_gen + loss_dect
                     loss_total.backward()
-                    # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
-                    # torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=5.0)
+                    # caps the step size when the loss landscape gets steep (e.g. as
+                    # log_sig_max anneals down and narrows the MDN's NLL basin), instead of
+                    # relying solely on lr_gen being exactly right to avoid overshoot
+                    torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=args.grad_clip_dect)
+                    if args.gen_enable:
+                        torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=args.grad_clip_gen)
                     if args.gen_stop_early and ei >= args.gen_stop:
                         dect_opt.step()
                     else:
@@ -403,7 +421,7 @@ if __name__ == '__main__':
                     loss_dect = torch.tensor(0.)
                     loss_total = loss_gen
                     loss_total.backward()
-                    # torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=5.0)
+                    torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=args.grad_clip_gen)
                     gen_opt.step()
 
                 tb_writer.add_scalar('batch/loss_total', loss_total.detach().item(), global_step)
@@ -485,9 +503,9 @@ if __name__ == '__main__':
             if ppl.is_validate:
                 if ppl.is_consider_subset:
                     if (ei + 1) % ppl.val_per_epoch_subset == 0:
-                        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True)
+                        ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, is_subset=True, split_name='train')
                 if (ei + 1) % ppl.val_per_epoch_full == 0:
-                    ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader)
+                    ppl.validate_kitti_conditional(ei, list_conf_thr=ppl.list_val_conf_thr, data_loader=train_dataloader, split_name='train')
                     ran_final_full_validation = (ei == n_epochs - 1)
 
             tb_writer.flush()
