@@ -19,6 +19,7 @@ roi = [0,-15,-2,72,15,7.6]
 dict_cfg = dict(
     path_data = dict(
         list_dir_kradar = ['/media/ave/HDD_4_1/gen_2to5', '/media/ave/HDD_4_1/radar_bin_lidar_bag_files/generated_files', '/media/ave/e95e0722-32a4-4880-a5d5-bb46967357d6/radar_bin_lidar_bag_files/generated_files', '/media/ave/4f089d0e-7b60-493d-aac7-86ead9655194/radar_bin_lidar_bag_files/generated_files'],
+        list_seq = ['1'],
         split = ['./resources/split/train.txt', './resources/split/test.txt'],
         revised_label_v1_1 = '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1',
         revised_label_v2_0 = '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL',
@@ -90,10 +91,14 @@ class KRadarDetection_v2_0(Dataset):
         get_split(path_data.split[0], list_dict_split, 'train')
         get_split(path_data.split[1], list_dict_split, 'test')
         
+        # which sequence folders to include, e.g. ['1'] or ['1','2','5'] -- configurable via
+        # cfg.DATASET.path_data.list_seq (yaml) / --seqs (CLI override in main_gen_rdr2ldr.py),
+        # defaulting to ['1'] to match prior hardcoded behavior if unset.
+        set_seq = {str(s) for s in path_data.get('list_seq', ['1'])}
         list_seqs_w_header = []
         for path_header in path_data.list_dir_kradar:
             list_seqs = os.listdir(path_header)
-            list_seqs_w_header.extend([(seq, path_header) for seq in list_seqs if seq in ['1']])
+            list_seqs_w_header.extend([(seq, path_header) for seq in list_seqs if seq in set_seq])
         list_seqs_w_header = sorted(list_seqs_w_header, key=lambda x: int(x[0]))
 
         list_dict_item = []

@@ -67,6 +67,9 @@ def arg_parser():
     args.add_argument('--grad_clip_gen', default=5.0, type=float)
     args.add_argument('--grad_clip_dect', default=5.0, type=float)
     args.add_argument('--set', default='train', type=str)
+    args.add_argument('--seqs', nargs='+', default=None,
+                       help='K-Radar sequence IDs to train/eval on, e.g. --seqs 1 2 5. '
+                            'Overrides cfg.DATASET.path_data.list_seq (default [\'1\']) if given.')
     return args.parse_args()
 
 
@@ -86,6 +89,8 @@ if __name__ == '__main__':
     elif args.model_cfg == 'rdr':
         cfg_path = './configs/cfg_rdr_ldr_sps.yml'
     cfg = cfg_from_yaml_file(cfg_path, cfg)
+    if args.seqs is not None:
+        cfg.DATASET.path_data.list_seq = [str(s) for s in args.seqs]
     model_cfg = args.model_cfg
 
     x_min, y_min, z_min, x_max, y_max, z_max = cfg.DATASET.roi.xyz

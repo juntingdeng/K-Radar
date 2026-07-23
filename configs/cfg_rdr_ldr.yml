@@ -32,6 +32,7 @@ DATASET:
   max_num_voxels: 10000
   path_data:
     list_dir_kradar: ['/home/juntingd/research/3DImage/lidar/K-radar/data/sequences']
+    list_seq: ['1'] # which K-Radar sequence folders (under list_dir_kradar) to load; overridable via --seqs
     split: ['/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/train.txt', '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/resources/split/test.txt']
     revised_label_v1_1: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v1_1'
     revised_label_v2_0: '/home/juntingd/research/3DImage/lidar/K-radar/K-Radar/tools/revise_label/kradar_revised_label_v2_0/KRadar_refined_label_by_UWIPL'
