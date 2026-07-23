@@ -40,6 +40,7 @@ def arg_parser():
     args.add_argument('--save_freq', type=int, default=20)
     args.add_argument('--lr', type=float, default=1e-3)
     args.add_argument('--lr_gen', type=float, default=2e-4)
+    args.add_argument('--weight_decay', type=float, default=0.01)
     args.add_argument('--dect_start_late', action='store_true')
     args.add_argument('--dect_start', type=int, default=100)
 
@@ -145,7 +146,7 @@ if __name__ == '__main__':
         if args.gen_pretrained:
             gen_net.load_state_dict(state_dict=model_load_ldr['gen_state_dict'])
 
-    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0)
+    dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler()
     ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn)
     ppl.set_validate()
