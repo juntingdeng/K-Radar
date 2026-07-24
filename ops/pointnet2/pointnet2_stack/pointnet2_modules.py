@@ -414,8 +414,14 @@ class VectorPoolAggregationModule(nn.Module):
         else:
             raise NotImplementedError
 
-        # if vector_features.shape[0] == 1:
-        #     vector_features = torch.vstack([vector_features, vector_features])
+        # BatchNorm1d in self.separate_local_aggregation_layer/post_mlps needs >1 value per
+        # channel in train mode; with a single new_xyz point (M1+M2+...==1, e.g. a batch with
+        # very few keypoints) it would otherwise raise "Expected more than 1 value per channel".
+        # Duplicate the single row so BN has 2 (identical) samples, then take just the first
+        # row back out so the returned shape still matches new_xyz's M rows.
+        was_single = (vector_features.shape[0] == 1)
+        if was_single:
+            vector_features = torch.vstack([vector_features, vector_features])
         # print(f"vector_features shape: before: {features.shape} after: {vector_features.shape}")
         vector_features = vector_features.permute(1, 0)[None, :, :]  # (1, num_voxels * C, M1 + M2 ...)
 
@@ -423,6 +429,8 @@ class VectorPoolAggregationModule(nn.Module):
 
         new_features = self.post_mlps(new_features)
         new_features = new_features.squeeze(dim=0).permute(1, 0)
+        if was_single:
+            new_features = new_features[:1]
         return new_xyz, new_features
 
 
@@ -469,8 +477,16 @@ class VectorPoolAggregationModuleMSG(nn.Module):
 
         features = torch.cat(features_list, dim=-1)
         features = torch.cat((cur_xyz, features), dim=-1)
+        # same single-keypoint BatchNorm1d issue as VectorPoolAggregationModule.forward, but
+        # for this class's own msg_post_mlps stack: with N==1 keypoints, duplicate the row so
+        # BN sees 2 samples, then slice back down to 1 so the returned shape matches cur_xyz.
+        was_single = (features.shape[0] == 1)
+        if was_single:
+            features = torch.vstack([features, features])
         features = features.permute(1, 0)[None, :, :]  # (1, C, N)
         new_features = self.msg_post_mlps(features)
         new_features = new_features.squeeze(dim=0).permute(1, 0)  # (N, C)
+        if was_single:
+            new_features = new_features[:1]
 
         return cur_xyz, new_features

@@ -75,7 +75,15 @@ class PointHeadSimple(PointHeadTemplate):
             point_features = batch_dict['point_features_before_fusion']
         else:
             point_features = batch_dict['point_features']
+        # self.cls_layers' BatchNorm1d needs >1 row; a sparse frame can leave just 1 total
+        # keypoint (same single-instance issue as in voxel_set_abstraction.py, whose PFE
+        # output this consumes directly). Duplicate then slice back to 1 row if so.
+        was_single = (point_features.shape[0] == 1)
+        if was_single:
+            point_features = torch.vstack([point_features, point_features])
         point_cls_preds = self.cls_layers(point_features)  # (total_points, num_class)
+        if was_single:
+            point_cls_preds = point_cls_preds[:1]
 
         ret_dict = {
             'point_cls_preds': point_cls_preds,

@@ -1,4 +1,5 @@
 # Modified from OpenPCDet (https://github.com/open-mmlab/OpenPCDet)
+import torch
 import torch.nn as nn
 
 from ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
@@ -153,12 +154,23 @@ class PVRCNNHead(RoIHeadTemplate):
 
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
+        # shared_fc_layer/cls_layers/reg_layers each have their own BatchNorm1d, which needs
+        # >1 row; a sparse frame can produce just 1 total RoI (bs=1 + few/no proposals), same
+        # single-instance issue as in pointnet2_modules.py/voxel_set_abstraction.py. Duplicate
+        # the pooled features so BN sees 2 rows, then slice the final outputs back to 1.
+        was_single_roi = (batch_size_rcnn == 1)
+        if was_single_roi:
+            pooled_features = torch.cat([pooled_features, pooled_features], dim=0)
+            batch_size_rcnn = 2
         pooled_features = pooled_features.permute(0, 2, 1).\
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
 
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
+        if was_single_roi:
+            rcnn_cls = rcnn_cls[:1]
+            rcnn_reg = rcnn_reg[:1]
 
         if not self.training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(

@@ -409,7 +409,16 @@ class VoxelSetAbstraction(nn.Module):
         point_features = torch.cat(point_features_list, dim=-1)
 
         batch_dict['point_features_before_fusion'] = point_features.view(-1, point_features.shape[-1])
-        point_features = self.vsa_point_feature_fusion(point_features.view(-1, point_features.shape[-1]))
+        point_features = point_features.view(-1, point_features.shape[-1])
+        # self.vsa_point_feature_fusion's BatchNorm1d needs >1 row (same single-keypoint issue
+        # as in pointnet2_modules.py); duplicate then slice back if there's only one keypoint
+        # total for this batch.
+        was_single = (point_features.shape[0] == 1)
+        if was_single:
+            point_features = torch.vstack([point_features, point_features])
+        point_features = self.vsa_point_feature_fusion(point_features)
+        if was_single:
+            point_features = point_features[:1]
 
         batch_dict['point_features'] = point_features  # (BxN, C)
         batch_dict['point_coords'] = keypoints  # (BxN, 4)
