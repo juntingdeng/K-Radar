@@ -361,7 +361,7 @@ cfg_eval_ver2: True
 VAL:
   IS_VALIDATE: True
   IS_CONSIDER_VAL_SUBSET: True
-  VAL_PER_EPOCH_SUBSET: 1
+  VAL_PER_EPOCH_SUBSET: 10
   NUM_SUBSET: 500 # 500
   VAL_PER_EPOCH_FULL: 100 # epoch for validate full dataset
 

@@ -71,6 +71,10 @@ def arg_parser():
     args.add_argument('--seqs', nargs='+', default=None,
                        help='K-Radar sequence IDs to train/eval on, e.g. --seqs 1 2 5. '
                             'Overrides cfg.DATASET.path_data.list_seq (default [\'1\']) if given.')
+    args.add_argument('--num_workers', default=8, type=int,
+                       help='DataLoader workers, so point-cloud file I/O for the next frame '
+                            'overlaps with the current frame\'s CPU-bound voxelization/matching '
+                            '(was hardcoded to 0, fully serializing data loading with GPU compute).')
     return args.parse_args()
 
 
@@ -106,11 +110,11 @@ if __name__ == '__main__':
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
     train_dataloader = DataLoader(train_kdataset, batch_size=bs,
-                                  collate_fn=train_kdataset.collate_fn, num_workers=0, shuffle=True)
+                                  collate_fn=train_kdataset.collate_fn, num_workers=args.num_workers, shuffle=True)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
-    test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
-                            collate_fn=test_kdataset.collate_fn, num_workers=0, shuffle=False)
+    test_dataloader = DataLoader(test_kdataset, batch_size=bs,
+                            collate_fn=test_kdataset.collate_fn, num_workers=args.num_workers, shuffle=False)
 
     rdr_processor = RadarSparseProcessor(cfg)
     ldr_processor = LdrPreprocessor(cfg)
@@ -158,23 +162,40 @@ if __name__ == '__main__':
     tb_writer = SummaryWriter(log_dir=os.path.join(log_path, 'tensorboard'))
 
     def log_eval_summary(dict_summary, tag, ei):
-        # dict_summary: {conf_thr: {cls_name: {'bev':.., '3d':.., 'num_frames':.., 'num_gt_obj':.., 'num_dt_obj':..}}}
+        # dict_summary: {conf_thr: {cls_name: {'bev':.., '3d':.., 'recall_bev':.., 'recall_3d':..,
+        #   'f1_bev':.., 'f1_3d':.., 'num_frames':.., 'num_gt_obj':.., 'num_dt_obj':..}}}
         # from Validate.validate_kitti_conditional's 'all' condition. Logs a per-epoch curve
         # per class (eval_train/* or eval_test/*) plus a mean-over-classes curve, instead of
-        # mAP only ever existing as printed text / complete_results.txt.
+        # mAP only ever existing as printed text / complete_results.txt. Recall/F1 ride along
+        # AP for the same reason they're in complete_results.txt: AP alone floors out at a
+        # fixed 1/11 (~9.09%) whenever only the recall=0 sample point is hit, which reads as
+        # "9% performance" regardless of whether the detector found nothing or almost
+        # everything at low precision -- Recall/F1 disambiguate that.
         if not dict_summary:
             return
         for conf_thr, dict_cls in dict_summary.items():
-            bevs, threeds = [], []
+            bevs, threeds, recs_bev, recs_3d, f1s_bev, f1s_3d = [], [], [], [], [], []
             for cls_name, metrics in dict_cls.items():
                 tb_writer.add_scalar(f'eval_{tag}/{cls_name}_bev', metrics['bev'], ei)
                 tb_writer.add_scalar(f'eval_{tag}/{cls_name}_3d', metrics['3d'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_recall_bev', metrics['recall_bev'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_recall_3d', metrics['recall_3d'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_f1_bev', metrics['f1_bev'], ei)
+                tb_writer.add_scalar(f'eval_{tag}/{cls_name}_f1_3d', metrics['f1_3d'], ei)
                 tb_writer.add_scalar(f'eval_{tag}/{cls_name}_num_gt_obj', metrics['num_gt_obj'], ei)
                 bevs.append(metrics['bev'])
                 threeds.append(metrics['3d'])
+                recs_bev.append(metrics['recall_bev'])
+                recs_3d.append(metrics['recall_3d'])
+                f1s_bev.append(metrics['f1_bev'])
+                f1s_3d.append(metrics['f1_3d'])
             if bevs:
                 tb_writer.add_scalar(f'eval_{tag}/mean_bev', sum(bevs) / len(bevs), ei)
                 tb_writer.add_scalar(f'eval_{tag}/mean_3d', sum(threeds) / len(threeds), ei)
+                tb_writer.add_scalar(f'eval_{tag}/mean_recall_bev', sum(recs_bev) / len(recs_bev), ei)
+                tb_writer.add_scalar(f'eval_{tag}/mean_recall_3d', sum(recs_3d) / len(recs_3d), ei)
+                tb_writer.add_scalar(f'eval_{tag}/mean_f1_bev', sum(f1s_bev) / len(f1s_bev), ei)
+                tb_writer.add_scalar(f'eval_{tag}/mean_f1_3d', sum(f1s_3d) / len(f1s_3d), ei)
                 tb_writer.add_scalar(f'eval_{tag}/num_frames', next(iter(dict_cls.values()))['num_frames'], ei)
 
     scheduler = CosineAnnealingLR(dect_opt, T_max=args.nepochs)
@@ -195,6 +216,12 @@ if __name__ == '__main__':
         model_load = torch.load(f'./logs/exp_{log_sig}_RTNH/models/epoch{epoch}.pth')
         if args.gen_enable:
             gen_net.load_state_dict(state_dict=model_load['gen_state_dict'])
+            # was missing: gen_net defaults to train() mode after construction, so
+            # without this its BatchNorm1d layers would normalize on each eval frame's
+            # own batch statistics (and mutate their running stats as a side effect)
+            # instead of using the trained running stats, inconsistent with dect_net
+            # correctly being in eval mode below.
+            gen_net.eval()
 
         # model_load_ldr = torch.load(f'./logs/exp_251119_133450_RTNH/models/epoch30.pth')
         dect_net.load_state_dict(state_dict=model_load['dect_state_dict'])
@@ -204,7 +231,7 @@ if __name__ == '__main__':
         print(f'dect_net.training: {dect_net.training}')
         print(f"/////dect_loss: {model_load['loss_dect']}")
         dl = test_dataloader if args.set == 'test' else train_dataloader
-        summary = ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=True, split_name=args.set)
+        summary = ppl.validate_kitti_conditional(-1, list_conf_thr=ppl.list_val_conf_thr, data_loader=dl, save_res=args.save_res, is_subset=False, split_name=args.set)
         log_eval_summary(summary, args.set, 0)
 
     else:
@@ -431,7 +458,7 @@ if __name__ == '__main__':
                     running_loss_dect += loss_dect.detach().item()
                     # loss_total = loss_gen + 0.5 * (1.0 - np.cos(np.pi * (ei/n_epochs)))*loss_dect
                     
-                    loss_total = loss_dect if args.gen_stop_early and ei >= args.gen_stop else loss_gen + loss_dect
+                    loss_total = loss_dect if not args.gen_enable or (args.gen_stop_early and ei >= args.gen_stop) else loss_gen + loss_dect
                     loss_total.backward()
                     # caps the step size when the loss landscape gets steep (e.g. as
                     # log_sig_max anneals down and narrows the MDN's NLL basin), instead of
@@ -439,7 +466,7 @@ if __name__ == '__main__':
                     torch.nn.utils.clip_grad_norm_(dect_net.parameters(), max_norm=args.grad_clip_dect)
                     if args.gen_enable:
                         torch.nn.utils.clip_grad_norm_(gen_net.parameters(), max_norm=args.grad_clip_gen)
-                    if args.gen_stop_early and ei >= args.gen_stop:
+                    if not args.gen_enable or (args.gen_stop_early and ei >= args.gen_stop):
                         dect_opt.step()
                     else:
                         dect_opt.step()

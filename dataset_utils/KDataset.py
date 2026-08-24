@@ -2,8 +2,6 @@ import numpy as np
 import os
 import sys
 import collections
-from pypcd4 import PointCloud
-from PIL import Image
 import yaml
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -15,66 +13,6 @@ from utils.util_config import *
 from models.skeletons import PVRCNNPlusPlus
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-def get_time(path):
-    digit = int(path.split('.')[-2].split('_')[-1])
-    return digit
-
-class Kdataset:
-    def __init__(self, root, seqs=[1], ldr_res=64, cam_chan='front', items=['rdr', 'ldr', 'cam']):
-        self.items = items
-        rdr_path_root = 'rdr_sparse_data/sparse_radar_tensor_wide_range/rtnh_wider_1p_1'
-        ldr_path_root = 'sequences'
-        cam_path_root = 'sequences'
-        ldr_res = 'os2-64' if ldr_res == 64 else 'os1-128'
-        cam_chan = 'cam-'+cam_chan
-
-        self.data_dicts = collections.defaultdict(dict)
-        for seq in seqs:
-            rdr_path_seq = os.path.join(root, rdr_path_root, str(seq))
-            ldr_path_seq = os.path.join(root, ldr_path_root, str(seq), ldr_res)
-            cam_path_seq = os.path.join(root, cam_path_root, str(seq), cam_chan)
-
-            rdr_paths = os.listdir(rdr_path_seq) 
-            ldr_paths = os.listdir(ldr_path_seq) 
-            cam_paths = os.listdir(cam_path_seq)
-
-            for rdr_path in rdr_paths:
-                t = get_time(rdr_path)
-                self.data_dicts[(seq, t)]['rdr_path'] = os.path.join(rdr_path_seq, rdr_path)
-
-            for ldr_path in ldr_paths:
-                t = get_time(ldr_path)
-                self.data_dicts[(seq, t)]['ldr_path'] = os.path.join(ldr_path_seq, ldr_path)
-
-            for cam_path in cam_paths:
-                t = get_time(cam_path)
-                self.data_dicts[(seq, t)]['cam_path'] = os.path.join(cam_path_seq, cam_path)
-        
-        incomplete = []
-        for frame, data in self.data_dicts.items():
-            data_keys = list(data.keys()) # {'rdr_path':xxxx, 'ldr_path:xxxx, 'cam_path':xxxx}
-            for item in self.items:
-                if item+'_path' not in data_keys:
-                    incomplete.append(frame)
-                    break
-        
-        for frame in incomplete:
-            del self.data_dicts[frame]
-        
-        self.frames = list(self.data_dicts.keys())
-        self.data_dicts = list(self.data_dicts.values())
-        print(f'{len(self.data_dicts)} complete frames are loaded, {len(incomplete)} incomplete frames have been removed.')
-
-    def __len__(self):
-        return len(self.data_dicts)
-    
-    def __getitem__(self, index):
-        frame, data_dict = self.frames[index], self.data_dicts[index]
-        rdr_pts = np.load(data_dict['rdr_path'])
-        ldr_pts = PointCloud.from_path(data_dict['ldr_path']).numpy()[:, :4] #(x, y, z, intensity)
-        img = np.array(Image.open(data_dict['cam_path']))
-
-        return frame, rdr_pts, ldr_pts, img
 
 from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
 import cumm.tensorview as tv
@@ -105,6 +43,10 @@ class LdrPreprocessor:
         self.model_cfg = cfg.MODEL
         self.training = True
         self.split = 'train' if self.training else 'test'
+        # Shuffle points before voxelization so the max_num_voxels cap (spconv keeps
+        # voxels in point-scan order) doesn't always drop the same *spatial region* of
+        # the point cloud -- see diagnose_seq_matches.py's per-seq empty-match rates.
+        self.shuffle_points = True
 
         self.vsize_xyz=self.dataset_cfg.roi.voxel_size
         self.coors_range_xyz=np.array(self.dataset_cfg.roi.xyz)
@@ -131,10 +73,10 @@ class LdrPreprocessor:
         list_voxel_num_points = []
         for batch_idx in range(batch_dict['batch_size']):
             temp_points = batched_ldr64[torch.where(batched_indices_ldr64 == batch_idx)[0],:self.num_point_features]
-            
-            # if (self.shuffle_points) and (self.training):
-            #     shuffle_idx = np.random.permutation(temp_points.shape[0])
-            #     temp_points = temp_points[shuffle_idx,:]
+
+            if self.shuffle_points and self.training:
+                shuffle_idx = np.random.permutation(temp_points.shape[0])
+                temp_points = temp_points[shuffle_idx,:]
             list_points.append(temp_points)
             
             
@@ -163,6 +105,10 @@ class RadarSparseProcessor(nn.Module):
         super(RadarSparseProcessor, self).__init__()
         self.cfg = cfg
         # self.training = cfg.isTraining
+        # Same rationale as LdrPreprocessor.shuffle_points: the sparse radar points
+        # are stored in a fixed (likely power/SNR-descending) order, so without
+        # shuffling, the max_num_voxels cap always keeps the same spatial subset.
+        self.shuffle_points = True
 
         self.cfg_dataset_ver2 = self.cfg.get('cfg_dataset_ver2', False)
 
@@ -190,11 +136,13 @@ class RadarSparseProcessor(nn.Module):
 
         max_num_vox = self.cfg.DATASET.max_num_voxels #int(x_size*y_size*z_size*max_vox_percentage)
 
-        try:
-            self.device = self.grid_size.device
-        except:
-            self.device = 'cpu'
-        
+        # NOTE: self.grid_size is a plain float (roi.grid_size from the yaml), not a
+        # tensor, so `self.grid_size.device` always raised AttributeError here and
+        # silently fell back to 'cpu' -- forcing radar voxelization onto CPU even when
+        # a GPU is available. Mirror the `'cuda' if torch.cuda.is_available() else
+        # 'cpu'` convention used everywhere else in the training scripts instead.
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
         self.gen_voxels = PointToVoxel(
             # vsize_xyz = [self.grid_size, self.grid_size, self.grid_size],
             vsize_xyz= cfg_ds.roi.voxel_size,
@@ -215,7 +163,11 @@ class RadarSparseProcessor(nn.Module):
         for batch_idx in range(dict_item['batch_size']):
             corr_ind = torch.where(batch_indices == batch_idx)
             vox_in = rdr_sparse[corr_ind[0],:]
-                
+
+            if self.shuffle_points:
+                shuffle_idx = torch.randperm(vox_in.shape[0], device=vox_in.device)
+                vox_in = vox_in[shuffle_idx,:]
+
             voxel_features, voxel_coords, voxel_num_points = self.gen_voxels(vox_in)
             voxel_batch_idx = torch.full((voxel_coords.shape[0], 1), batch_idx, device=rdr_sparse.device, dtype=torch.int64)
             voxel_coords = torch.cat((voxel_batch_idx, voxel_coords), dim=-1) # bzyx

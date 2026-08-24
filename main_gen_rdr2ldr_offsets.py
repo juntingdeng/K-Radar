@@ -54,6 +54,10 @@ def arg_parser():
     args.add_argument('--eps', type=float, default=0.5)
     args.add_argument('--gt_topk', default=100, type=int)
     args.add_argument('--set', default='train', type=str)
+    args.add_argument('--num_workers', default=4, type=int,
+                       help='DataLoader workers, so point-cloud file I/O for the next frame '
+                            'overlaps with the current frame\'s CPU-bound voxelization/matching '
+                            '(was hardcoded to 0, fully serializing data loading with GPU compute).')
     return args.parse_args()
 
 
@@ -82,12 +86,12 @@ if __name__ == '__main__':
     
     bs=1
     train_kdataset = KRadarDetection_v2_0(cfg=cfg, split='train')
-    train_dataloader = DataLoader(train_kdataset, batch_size=bs, 
-                                  collate_fn=train_kdataset.collate_fn, num_workers=0, shuffle=False)
+    train_dataloader = DataLoader(train_kdataset, batch_size=bs,
+                                  collate_fn=train_kdataset.collate_fn, num_workers=args.num_workers, shuffle=False)
 
     test_kdataset = KRadarDetection_v2_0(cfg=cfg, split='test')
-    test_dataloader = DataLoader(test_kdataset, batch_size=bs, 
-                            collate_fn=test_kdataset.collate_fn, num_workers=0, shuffle=False)
+    test_dataloader = DataLoader(test_kdataset, batch_size=bs,
+                            collate_fn=test_kdataset.collate_fn, num_workers=args.num_workers, shuffle=False)
 
     rdr_processor = RadarSparseProcessor(cfg)
     ldr_processor = LdrPreprocessor(cfg)
