@@ -216,6 +216,16 @@ class Validate:
                 with open(path_dir + f'/{conf_thr}/' + weather_cond + '/val.txt', 'w') as f:
                     f.write('')
 
+            # Weather x location combo buckets, e.g. 'rain_urban' -- lets the report
+            # nest a per-location breakdown inside each weather condition instead of
+            # printing location and weather as separate, unrelated flat rows.
+            for weather_cond in weather_cond_list:
+                for road_cond in road_cond_list:
+                    combo_cond = f'{weather_cond}_{road_cond}'
+                    os.makedirs(os.path.join(path_dir, f'{conf_thr}', combo_cond), exist_ok=True)
+                    with open(path_dir + f'/{conf_thr}/' + combo_cond + '/val.txt', 'w') as f:
+                        f.write('')
+
             pred_dir_list = []
             label_dir_list = []
             desc_dir_list = []
@@ -273,7 +283,7 @@ class Validate:
                 desc_dir = os.path.join(path_dir, f'{conf_thr}', weather_cond, 'desc')
                 list_dir = [preds_dir, labels_dir, desc_dir]
                 split_path = path_dir + f'/{conf_thr}/' + weather_cond +'/val.txt'
-                
+
                 for temp_dir in list_dir:
                     os.makedirs(temp_dir, exist_ok=True)
 
@@ -281,6 +291,24 @@ class Validate:
                 label_dir_list.append(labels_dir)
                 desc_dir_list.append(desc_dir)
                 split_path_list.append(split_path)
+
+            ### For Weather x Location (nested per-weather location breakdown) ###
+            for weather_cond in weather_cond_list:
+                for road_cond in road_cond_list:
+                    combo_cond = f'{weather_cond}_{road_cond}'
+                    preds_dir = os.path.join(path_dir, f'{conf_thr}', combo_cond, 'preds')
+                    labels_dir = os.path.join(path_dir, f'{conf_thr}', combo_cond, 'gts')
+                    desc_dir = os.path.join(path_dir, f'{conf_thr}', combo_cond, 'desc')
+                    list_dir = [preds_dir, labels_dir, desc_dir]
+                    split_path = path_dir + f'/{conf_thr}/' + combo_cond + '/val.txt'
+
+                    for temp_dir in list_dir:
+                        os.makedirs(temp_dir, exist_ok=True)
+
+                    pred_dir_list.append(preds_dir)
+                    label_dir_list.append(labels_dir)
+                    desc_dir_list.append(desc_dir)
+                    split_path_list.append(split_path)
 
         # Creating gts and preds txt files for evaluation
         for idx_datum, dict_datum in enumerate(data_loader):
@@ -549,6 +577,7 @@ class Validate:
             
             road_cond_tag, time_cond_tag, weather_cond_tag = \
                 dict_out['meta'][0]['desc']['road_type'], dict_out['meta'][0]['desc']['capture_time'], dict_out['meta'][0]['desc']['climate']
+            combo_cond_tag = f'{weather_cond_tag}_{road_cond_tag}'
             # print(dict_out['desc'][0])
 
             ### for every conf in list_conf_thr ###
@@ -576,16 +605,26 @@ class Validate:
                 desc_dir_weather = os.path.join(path_dir, f'{conf_thr}', weather_cond_tag, 'desc')
                 split_path_weather =path_dir + f'/{conf_thr}/' + weather_cond_tag + '/val.txt'
 
+                # weather x location combo (e.g. 'rain_urban'), feeds the per-weather
+                # nested location breakdown in the report below.
+                preds_dir_combo = os.path.join(path_dir, f'{conf_thr}', combo_cond_tag, 'preds')
+                labels_dir_combo = os.path.join(path_dir, f'{conf_thr}', combo_cond_tag, 'gts')
+                desc_dir_combo = os.path.join(path_dir, f'{conf_thr}', combo_cond_tag, 'desc')
+                split_path_combo = path_dir + f'/{conf_thr}/' + combo_cond_tag + '/val.txt'
+
                 os.makedirs(labels_dir_road, exist_ok=True)
                 os.makedirs(labels_dir_time, exist_ok=True)
                 os.makedirs(labels_dir_weather, exist_ok=True)
+                os.makedirs(labels_dir_combo, exist_ok=True)
                 os.makedirs(desc_dir_road, exist_ok=True)
                 os.makedirs(desc_dir_time, exist_ok=True)
                 os.makedirs(desc_dir_weather, exist_ok=True)
+                os.makedirs(desc_dir_combo, exist_ok=True)
                 os.makedirs(preds_dir_road, exist_ok=True)
                 os.makedirs(preds_dir_time, exist_ok=True)
                 os.makedirs(preds_dir_weather, exist_ok=True)
-                
+                os.makedirs(preds_dir_combo, exist_ok=True)
+
                 if is_feature_inferenced:
                     if eval_ver2:
                         pred_dicts = dict_out['pred_dicts'][0]
@@ -654,6 +693,8 @@ class Validate:
                             f.write(label+'\n')
                         with open(labels_dir_weather + '/' + idx_name + '.txt', mode) as f:
                             f.write(label+'\n')
+                        with open(labels_dir_combo + '/' + idx_name + '.txt', mode) as f:
+                            f.write(label+'\n')
 
                     ### Process description ###
                     with open(desc_dir + '/' + idx_name + '.txt', 'w') as f:
@@ -663,6 +704,8 @@ class Validate:
                     with open(desc_dir_time + '/' + idx_name + '.txt', 'w') as f:
                         f.write(dict_out_current['kitti_desc'])
                     with open(desc_dir_weather + '/' + idx_name + '.txt', 'w') as f:
+                        f.write(dict_out_current['kitti_desc'])
+                    with open(desc_dir_combo + '/' + idx_name + '.txt', 'w') as f:
                         f.write(dict_out_current['kitti_desc'])
 
                     ### Process description ###
@@ -674,6 +717,8 @@ class Validate:
                         with open(preds_dir_time + '/' + idx_name + '.txt', mode) as f:
                             f.write('\n')
                         with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
+                            f.write('\n')
+                        with open(preds_dir_combo + '/' + idx_name + '.txt', mode) as f:
                             f.write('\n')
                     else:
                         for idx_pred, pred in enumerate(dict_out_current['kitti_pred']):
@@ -690,7 +735,9 @@ class Validate:
                                 f.write(pred+'\n')
                             with open(preds_dir_weather + '/' + idx_name + '.txt', mode) as f:
                                 f.write(pred+'\n')
-                    
+                            with open(preds_dir_combo + '/' + idx_name + '.txt', mode) as f:
+                                f.write(pred+'\n')
+
                     str_log = idx_name + '\n'
                     with open(split_path, 'a') as f:
                         f.write(str_log)
@@ -700,7 +747,9 @@ class Validate:
                         f.write(str_log)
                     with open(split_path_weather, 'a') as f:
                         f.write(str_log)
-                        
+                    with open(split_path_combo, 'a') as f:
+                        f.write(str_log)
+
             # free memory (Killed error, checked with htop)
             if 'pointer' in dict_datum.keys():
                 for dict_item in dict_datum['pointer']:
@@ -717,86 +766,135 @@ class Validate:
         # callers can log it as a scalar (e.g. a per-epoch mAP curve), instead of results
         # only ever living in printed text / complete_results.txt
         dict_summary = {}
-        all_condition_list = ['all'] + road_cond_list + time_cond_list + weather_cond_list
+
+        def eval_condition(conf_thr, condition, label=None):
+            """Evaluate one condition bucket (preds/gts/val.txt already populated in the
+            per-frame loop above), print its KITTI metrics, and append them to
+            complete_results.txt. `label`, if given, is what gets printed/written instead
+            of the raw `condition` directory name -- used so the nested per-weather
+            location rows read as e.g. "rain / urban" rather than the raw 'rain_urban'
+            combo tag. Returns silently (no crash, no dict_summary entry) if this bucket
+            has no samples for this single-sequence/eval-set slice."""
+            try:
+                preds_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'preds')
+                labels_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'gts')
+                split_path = path_dir + f'/{conf_thr}/' + condition + '/val.txt'
+                display = label if label is not None else condition
+
+                dt_annos = kitti.get_label_annos(preds_dir)
+                val_ids = read_imageset_file(split_path)
+                gt_annos = kitti.get_label_annos(labels_dir, val_ids)
+                if len(dt_annos) == 0 or len(gt_annos) == 0:
+                    # no samples with GT objects landed in this condition/threshold slice
+                    # (e.g. a narrow weather/road/time category with zero matches in this
+                    # single-sequence dataset) -- nothing was written to preds_dir/labels_dir
+                    # for it, so there is nothing to evaluate. Expected/benign, not an error:
+                    # calculate_iou_partly's np.stack([...], 0) would otherwise raise
+                    # "need at least one array to stack" on an empty dt_annos/gt_annos.
+                    print(f'* Skip eval (no samples): conf_thr={conf_thr}, condition={display}')
+                    return
+                num_frames = len(gt_annos)  # same sample set for every class below
+                list_metrics = []
+                for idx_cls_val in self.list_val_care_idx:
+                    # if self.is_validation_updated:
+                    #     # Thanks to Felix Fent (in TUM) and Miao Zhang (in Bosch Research)
+                    #     # Fixed mixed interpolation (issue #28) and z_center (issue #36) in evaluation
+                    #     dict_metrics, result = get_official_eval_result_revised(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
+                    # else:
+                    dict_metrics, result = get_official_eval_result(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
+                    list_metrics.append(dict_metrics)
+                print('Conf thr: ', str(conf_thr), ', Condition: ', display, ', Frames: ', num_frames)
+                with open(os.path.join(path_dir, f'{conf_thr}', 'complete_results.txt'), 'a') as f:
+                    for dic_metric in list_metrics:
+                        # object counts for the class this metric is for -- an AP computed
+                        # over a handful of boxes (or one) is easy to misread as a strong
+                        # result, so surface the sample size it's actually based on
+                        cls_lower = dic_metric['cls'].lower()
+                        num_gt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in gt_annos))
+                        num_dt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in dt_annos))
+
+                        if condition == 'all':
+                            dict_summary.setdefault(conf_thr, {})[dic_metric['cls']] = {
+                                'bev': float(np.mean(dic_metric['bev'])),
+                                '3d': float(np.mean(dic_metric['3d'])),
+                                # AP alone floors out at a fixed 1/11 (~9.09%) whenever
+                                # only the recall=0 sample point is hit -- easy to misread
+                                # as "9% detection performance" when it's really "found
+                                # basically nothing, at any precision." Recall/F1 give the
+                                # complementary read: recall says whether it's finding
+                                # objects at all, F1 says how good its best precision/recall
+                                # trade-off is.
+                                'recall_bev': float(np.mean(dic_metric['recall_bev'])),
+                                'recall_3d': float(np.mean(dic_metric['recall_3d'])),
+                                'f1_bev': float(np.mean(dic_metric['f1_bev'])),
+                                'f1_3d': float(np.mean(dic_metric['f1_3d'])),
+                                'num_frames': num_frames,
+                                'num_gt_obj': num_gt_obj,
+                                'num_dt_obj': num_dt_obj,
+                            }
+
+                        print('='*50)
+                        print('Cls: ', dic_metric['cls'], f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})')
+                        print('IoU:', dic_metric['iou'])
+                        print('BEV AP:     ', dic_metric['bev'])
+                        print('BEV Recall: ', dic_metric['recall_bev'])
+                        print('BEV F1:     ', dic_metric['f1_bev'])
+                        print('3D  AP:     ', dic_metric['3d'])
+                        print('3D  Recall: ', dic_metric['recall_3d'])
+                        print('3D  F1:     ', dic_metric['f1_3d'])
+                        print('-'*50)
+
+                        f.write('Conf thr: ' + str(conf_thr) +  ', Condition: ' + display + '\n')
+                        f.write('cls: ' + dic_metric['cls'] + f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})' + '\n')
+                        f.write('iou: ')
+                        for iou in dic_metric['iou']:
+                            f.write(str(iou) + ' ')
+                        f.write('\n')
+                        f.write('bev        : ')
+                        for bev in dic_metric['bev']:
+                            f.write(str(bev) + ' ')
+                        f.write('\n')
+                        f.write('bev_recall : ')
+                        for rec in dic_metric['recall_bev']:
+                            f.write(str(rec) + ' ')
+                        f.write('\n')
+                        f.write('bev_f1     : ')
+                        for f1v in dic_metric['f1_bev']:
+                            f.write(str(f1v) + ' ')
+                        f.write('\n')
+                        f.write('3d         : ')
+                        for det3d in dic_metric['3d']:
+                            f.write(str(det3d) + ' ')
+                        f.write('\n')
+                        f.write('3d_recall  : ')
+                        for rec in dic_metric['recall_3d']:
+                            f.write(str(rec) + ' ')
+                        f.write('\n')
+                        f.write('3d_f1      : ')
+                        for f1v in dic_metric['f1_3d']:
+                            f.write(str(f1v) + ' ')
+                        f.write('\n\n')
+                print('\n')
+            except Exception:
+                print(f'* Exception error (Pipeline): eval failed for conf_thr={conf_thr}, condition={condition}')
+                traceback.print_exc()
+
         for conf_thr in list_conf_thr:
-            for condition in all_condition_list:
-                try:
-                    # print(f'conf_thr: {conf_thr}, condition: {condition}')
-                    preds_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'preds')
-                    labels_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'gts')
-                    desc_dir = os.path.join(path_dir, f'{conf_thr}', condition, 'desc')
-                    split_path = path_dir + f'/{conf_thr}/' + condition + '/val.txt'
+            eval_condition(conf_thr, 'all')
 
-                    dt_annos = kitti.get_label_annos(preds_dir)
-                    val_ids = read_imageset_file(split_path)
-                    gt_annos = kitti.get_label_annos(labels_dir, val_ids)
-                    if len(dt_annos) == 0 or len(gt_annos) == 0:
-                        # no samples with GT objects landed in this condition/threshold slice
-                        # (e.g. a narrow weather/road/time category with zero matches in this
-                        # single-sequence dataset) -- nothing was written to preds_dir/labels_dir
-                        # for it, so there is nothing to evaluate. Expected/benign, not an error:
-                        # calculate_iou_partly's np.stack([...], 0) would otherwise raise
-                        # "need at least one array to stack" on an empty dt_annos/gt_annos.
-                        print(f'* Skip eval (no samples): conf_thr={conf_thr}, condition={condition}')
-                        continue
-                    num_frames = len(gt_annos)  # same sample set for every class below
-                    list_metrics = []
-                    list_results = []
-                    for idx_cls_val in self.list_val_care_idx:
-                        # if self.is_validation_updated:
-                        #     # Thanks to Felix Fent (in TUM) and Miao Zhang (in Bosch Research)
-                        #     # Fixed mixed interpolation (issue #28) and z_center (issue #36) in evaluation
-                        #     dict_metrics, result = get_official_eval_result_revised(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
-                        # else:
-                        dict_metrics, result = get_official_eval_result(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
-                        # print(f'conf_thr: {conf_thr}, dict_metrics: {dict_metrics}')
-                        list_metrics.append(dict_metrics)
-                        list_results.append(result)
-                    print('Conf thr: ', str(conf_thr), ', Condition: ', condition, ', Frames: ', num_frames)
-                    with open(os.path.join(path_dir, f'{conf_thr}', 'complete_results.txt'), 'a') as f:
-                        for dic_metric in list_metrics:
-                            # object counts for the class this metric is for -- an AP computed
-                            # over a handful of boxes (or one) is easy to misread as a strong
-                            # result, so surface the sample size it's actually based on
-                            cls_lower = dic_metric['cls'].lower()
-                            num_gt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in gt_annos))
-                            num_dt_obj = int(sum(np.sum(np.char.lower(anno['name'].astype(str)) == cls_lower) for anno in dt_annos))
+            for time_cond in time_cond_list:
+                eval_condition(conf_thr, time_cond)
 
-                            if condition == 'all':
-                                dict_summary.setdefault(conf_thr, {})[dic_metric['cls']] = {
-                                    'bev': float(np.mean(dic_metric['bev'])),
-                                    '3d': float(np.mean(dic_metric['3d'])),
-                                    'num_frames': num_frames,
-                                    'num_gt_obj': num_gt_obj,
-                                    'num_dt_obj': num_dt_obj,
-                                }
-
-                            print('='*50)
-                            print('Cls: ', dic_metric['cls'], f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})')
-                            print('IoU:', dic_metric['iou'])
-                            print('BEV: ', dic_metric['bev'])
-                            print('3D: ', dic_metric['3d'])
-                            print('-'*50)
-
-                            f.write('Conf thr: ' + str(conf_thr) +  ', Condition: ' + condition + '\n')
-                            f.write('cls: ' + dic_metric['cls'] + f' (frames: {num_frames}, gt boxes: {num_gt_obj}, pred boxes: {num_dt_obj})' + '\n')
-                            f.write('iou: ')
-                            for iou in dic_metric['iou']:
-                                f.write(str(iou) + ' ')
-                            f.write('\n')
-                            f.write('bev: ')
-                            for bev in dic_metric['bev']:
-                                f.write(str(bev) + ' ')
-                            f.write('\n')
-                            f.write('3d  :')
-                            for det3d in dic_metric['3d']:
-                                f.write(str(det3d) + ' ')
-                            f.write('\n\n')
-                    print('\n')
-                except Exception:
-                    print(f'* Exception error (Pipeline): eval failed for conf_thr={conf_thr}, condition={condition}')
-                    traceback.print_exc()
-                    continue
+            # Per-weather report, with a nested per-location breakdown underneath each
+            # weather condition -- instead of location (road_cond_list) and weather
+            # (weather_cond_list) being printed as separate, unrelated flat rows.
+            for weather_cond in weather_cond_list:
+                print('#'*60)
+                print(f'# WEATHER: {weather_cond}')
+                print('#'*60)
+                eval_condition(conf_thr, weather_cond, label=f'{weather_cond} (overall)')
+                for road_cond in road_cond_list:
+                    eval_condition(conf_thr, f'{weather_cond}_{road_cond}', label=f'{weather_cond} / {road_cond}')
 
         for conf_thr in list_conf_thr:
             print(f'* Check {os.path.join(path_dir, f"{conf_thr}", "complete_results.txt")}')

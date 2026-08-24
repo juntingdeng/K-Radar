@@ -527,6 +527,8 @@ def eval_class(gt_annos,
         [num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS])
     recall = np.zeros(
         [num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS])
+    f1 = np.zeros(
+        [num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS])
     aos = np.zeros([num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS])
     all_thresholds = np.zeros([num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS])
     for m, current_class in enumerate(current_classes):
@@ -585,6 +587,19 @@ def eval_class(gt_annos,
                     idx += num_part
                 for i in range(len(thresholds)):
                     precision[m, l, k, i] = pr[i, 0] / (pr[i, 0] + pr[i, 1])
+                    # tp / (tp + fn); unlike precision this is monotonically
+                    # non-decreasing in i by construction (raising the score
+                    # threshold only ever drops detections, never adds one), so
+                    # -- unlike precision below -- it needs no suffix-max smoothing.
+                    # tp+fn == 0 means zero valid GT boxes for this class/condition
+                    # (a real case here, e.g. a weather bucket with 0 GT Sedans) --
+                    # recall is vacuous there, so define it as 0 rather than 0/0=NaN.
+                    if (pr[i, 0] + pr[i, 2]) > 0:
+                        recall[m, l, k, i] = pr[i, 0] / (pr[i, 0] + pr[i, 2])
+                    denom = precision[m, l, k, i] + recall[m, l, k, i]
+                    if denom > 0:
+                        f1[m, l, k, i] = (2 * precision[m, l, k, i] * recall[m, l, k, i]
+                                          / denom)
                     if compute_aos:
                         aos[m, l, k, i] = pr[i, 3] / (pr[i, 0] + pr[i, 1])
                 for i in range(len(thresholds)):
@@ -594,8 +609,9 @@ def eval_class(gt_annos,
                         aos[m, l, k, i] = np.max(aos[m, l, k, i:], axis=-1)
 
     ret_dict = {
-        # "recall": recall, # [num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS]
         "precision": precision,
+        "recall": recall,       # [num_class, num_difficulty, num_minoverlap, N_SAMPLE_PTS]
+        "f1": f1,                # computed from raw (pre-smoothing) precision/recall at each sampled threshold
         "orientation": aos,
         "thresholds": all_thresholds,
         "min_overlaps": min_overlaps,
@@ -608,6 +624,26 @@ def get_mAP_v2(prec):
     for i in range(0, prec.shape[-1], 4):
         sums = sums + prec[..., i]
     return sums / 11 * 100
+
+
+def get_recall_v2(rec):
+    """Headline Recall: max recall achieved across the sampled score
+    thresholds, i.e. at the most permissive threshold within the detections
+    that already passed conf_thr upstream -- "of all GT boxes, what fraction
+    did the detector find at least one IoU-passing prediction for."
+    rec: [..., N_SAMPLE_PTS] (monotonically non-decreasing along last axis).
+    """
+    return rec[..., -1] * 100
+
+
+def get_f1_v2(f1):
+    """Headline F1: best precision/recall balance across the sampled
+    thresholds (the F1-optimal operating point), since -- unlike AP, which
+    integrates the whole curve -- there's no single fixed decision threshold
+    this pipeline commits to ahead of time.
+    f1: [..., N_SAMPLE_PTS].
+    """
+    return f1.max(-1) * 100
 
 
 def do_eval_v2(gt_annos,
@@ -766,6 +802,16 @@ def get_official_eval_result(gt_annos,
         'bbox': [],
         'bev': [],
         '3d': [],
+        # AP alone is easy to misread on small/imbalanced GT sets -- e.g. it can
+        # sit on a fixed 1/11 "floor" when only the recall=0 sample point is hit,
+        # reading as "9.09% AP" regardless of whether the detector is actually
+        # producing zero, one, or a hundred correct detections. Recall and F1
+        # give a complementary read: Recall says whether it's finding objects at
+        # all; F1 says how good its best precision/recall trade-off is.
+        'recall_bev': [],
+        'recall_3d': [],
+        'f1_bev': [],
+        'f1_3d': [],
     }
 
     name_to_class = {v: n for n, v in class_to_name.items()}
@@ -809,23 +855,45 @@ def get_official_eval_result(gt_annos,
             mAP3d = get_mAP_v2(metrics["3d"]["precision"][j, :, i])
             log_3d = mAP3d[0]
             mAP3d = ", ".join(f"{v:.2f}" for v in mAP3d)
+
+            recBev = get_recall_v2(metrics["bev"]["recall"][j, :, i])
+            log_rec_bev = recBev[0]
+            recBev = ", ".join(f"{v:.2f}" for v in recBev)
+            rec3d = get_recall_v2(metrics["3d"]["recall"][j, :, i])
+            log_rec_3d = rec3d[0]
+            rec3d = ", ".join(f"{v:.2f}" for v in rec3d)
+            f1Bev = get_f1_v2(metrics["bev"]["f1"][j, :, i])
+            log_f1_bev = f1Bev[0]
+            f1Bev = ", ".join(f"{v:.2f}" for v in f1Bev)
+            f1_3d = get_f1_v2(metrics["3d"]["f1"][j, :, i])
+            log_f1_3d = f1_3d[0]
+            f1_3d = ", ".join(f"{v:.2f}" for v in f1_3d)
+
             result += print_str(
                 (f"{class_to_name[curcls]} "
                  "AP(Average Precision)@{:.2f}, {:.2f}, {:.2f}:".format(*min_overlaps[i, :, j])))
             result += print_str(f"bbox AP:{mAPbbox}")
             result += print_str(f"bev  AP:{mAPbev}")
             result += print_str(f"3d   AP:{mAP3d}")
+            result += print_str(f"bev  Recall:{recBev}")
+            result += print_str(f"3d   Recall:{rec3d}")
+            result += print_str(f"bev  F1:{f1Bev}")
+            result += print_str(f"3d   F1:{f1_3d}")
             if compute_aos:
                 mAPaos = get_mAP_v2(metrics["bbox"]["orientation"][j, :, i])
                 mAPaos = ", ".join(f"{v:.2f}" for v in mAPaos)
                 result += print_str(f"aos  AP:{mAPaos}")
-            
+
             ### Only logging once ###
             dict_metrics['cls'] = f"{class_to_name[curcls]}"
             dict_metrics['iou'].append(min_overlaps[i, :, j][0])
             dict_metrics['bbox'].append(log_bbox)
             dict_metrics['bev'].append(log_bev)
             dict_metrics['3d'].append(log_3d)
+            dict_metrics['recall_bev'].append(log_rec_bev)
+            dict_metrics['recall_3d'].append(log_rec_3d)
+            dict_metrics['f1_bev'].append(log_f1_bev)
+            dict_metrics['f1_3d'].append(log_f1_3d)
 
     if is_return_with_dict:
         return dict_metrics, result
