@@ -4,6 +4,10 @@
 * e-mail: donghee.paek@kaist.ac.kr, kevin.tirta@kaist.ac.kr
 '''
 
+import os, sys
+# this launcher lives in uis/; add the repo root so `from uis... import` resolves
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from uis.ui_vis import startUi
 
 if __name__ == '__main__':

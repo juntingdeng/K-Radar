@@ -4,8 +4,10 @@
 * e-mail: donghee.paek@kaist.ac.kr, kevin.tirta@kaist.ac.kr
 '''
 
-import os
+import os, sys
 os.environ['CUDA_VISIBLE_DEVICES']= '0'
+# this script lives in scripts/; add the repo root so project imports below resolve
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipelines.pipeline_detection_v1_0 import PipelineDetection_v1_0
 

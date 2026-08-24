@@ -1,3 +1,7 @@
+import os, sys
+# this script lives in vis/; add the repo root so `from datasets/utils/models/... import` resolves
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import open3d as o3d
 import numpy as np
 import argparse

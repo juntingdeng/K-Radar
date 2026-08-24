@@ -152,7 +152,8 @@ if __name__ == '__main__':
 
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=args.weight_decay)
     scaler = GradScaler()
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn)
+    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn,
+                   eval_log_sig=(None if training else args.log_sig), eval_epoch=(None if training else args.load_epoch))
     ppl.set_validate()
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')

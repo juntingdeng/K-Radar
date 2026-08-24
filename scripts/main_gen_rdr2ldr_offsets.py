@@ -16,6 +16,9 @@ import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
+# this script lives in scripts/; add the repo root so project imports below resolve
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0
 from utils.util_config import *
 from models.skeletons import PVRCNNPlusPlus
@@ -129,7 +132,8 @@ if __name__ == '__main__':
 
     dect_opt = optim.AdamW(dect_net.parameters(), lr = args.lr, weight_decay=0)
     scaler = GradScaler()
-    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn)
+    ppl = Validate(cfg=cfg, gen_net=gen_net, dect_net=dect_net, spatial_size=[z_size, y_size, x_size], model_cfg=args.model_cfg, mdn=args.mdn,
+                   eval_log_sig=args.log_sig, eval_epoch=args.load_epoch)
     ppl.set_validate()
     log_path = ppl.path_log
     save_model_path = os.path.join(log_path, 'models')

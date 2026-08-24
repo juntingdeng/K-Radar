@@ -10,14 +10,18 @@ in specific sequences (e.g. poor radar/LiDAR alignment or much sparser point den
 particular sequence) rather than being spread evenly.
 
 Usage:
-    python diagnose_seq_matches.py --seqs 1 13 58 --search_radius 5.0 --split train
+    python scripts/diagnose_seq_matches.py --seqs 1 13 58 --search_radius 5.0 --split train
 """
+import os, sys
 import argparse
 import collections
 
 import torch
 from torch.utils.data import DataLoader
 from spconv.pytorch import SparseConvTensor
+
+# this script lives in scripts/; add the repo root so project imports below resolve
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.util_config import *
 from datasets.kradar_detection_v2_0 import KRadarDetection_v2_0

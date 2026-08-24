@@ -57,8 +57,20 @@ def get_local_time_str():
     tm_sec = f'{now.tm_sec}'.zfill(2)
     return f'{tm_year}{tm_mon}{tm_mday}_{tm_hour}{tm_min}{tm_sec}'
 
+
+def cleanup_eval_dumps(path_dir, list_conf_thr):
+    """Delete the whole per-conf_thr dump dirs (preds/gts/desc per condition) once eval
+    is finished. Results are consolidated in path_dir/complete_results.txt; these dirs
+    exist only to feed the KITTI eval and otherwise pile up into hundreds of thousands
+    of tiny files across epochs/experiments."""
+    for conf_thr in list_conf_thr:
+        conf_path = os.path.join(path_dir, f'{conf_thr}')
+        if os.path.isdir(conf_path):
+            shutil.rmtree(conf_path, ignore_errors=True)
+
 class Validate:
-    def __init__(self, cfg, gen_net, dect_net, spatial_size=[], model_cfg='ldr', mdn=False):
+    def __init__(self, cfg, gen_net, dect_net, spatial_size=[], model_cfg='ldr', mdn=False,
+                 eval_log_sig=None, eval_epoch=None):
         self.is_validate = True
         self.gen_net = gen_net
         self.dect_net = dect_net
@@ -84,8 +96,16 @@ class Validate:
         list_val_keyword_keys = list(self.val_keyword.keys()) # same order as VAL.CLASS_VAL_KEYWORD.keys()
         self.list_val_care_idx = []
         str_local_time = get_local_time_str()
-        str_exp = 'exp_' + str_local_time + '_' + self.cfg.GENERAL.NAME
-        self.path_log = os.path.join(self.cfg.GENERAL.LOGGING.PATH_LOGGING, str_exp)
+        if eval_log_sig is not None:
+            # eval-only run: nest results inside the loaded checkpoint's training folder as
+            # eval_epoch<loaded-epoch>, instead of spawning a new exp_ folder
+            loaded_exp = 'exp_' + str(eval_log_sig) + '_' + self.cfg.GENERAL.NAME
+            eval_dir = 'eval_epoch' + str(eval_epoch)
+            self.path_log = os.path.join(self.cfg.GENERAL.LOGGING.PATH_LOGGING, loaded_exp, eval_dir)
+        else:
+            str_exp = 'exp_' + str_local_time + '_' + self.cfg.GENERAL.NAME
+            self.path_log = os.path.join(self.cfg.GENERAL.LOGGING.PATH_LOGGING, str_exp)
+        os.makedirs(self.path_log, exist_ok=True)
         self.log_test = os.path.join(self.path_log, 'test')
 
         # index matching with kitti_eval
@@ -804,7 +824,7 @@ class Validate:
                     dict_metrics, result = get_official_eval_result(gt_annos, dt_annos, idx_cls_val, is_return_with_dict=True)
                     list_metrics.append(dict_metrics)
                 print('Conf thr: ', str(conf_thr), ', Condition: ', display, ', Frames: ', num_frames)
-                with open(os.path.join(path_dir, f'{conf_thr}', 'complete_results.txt'), 'a') as f:
+                with open(os.path.join(path_dir, 'complete_results.txt'), 'a') as f:
                     for dic_metric in list_metrics:
                         # object counts for the class this metric is for -- an AP computed
                         # over a handful of boxes (or one) is easy to misread as a strong
@@ -879,6 +899,10 @@ class Validate:
                 print(f'* Exception error (Pipeline): eval failed for conf_thr={conf_thr}, condition={condition}')
                 traceback.print_exc()
 
+        # one consolidated results file for the whole epoch, overwriting any previous
+        # run of this epoch (was per-conf_thr append, so re-runs piled up duplicates)
+        open(os.path.join(path_dir, 'complete_results.txt'), 'w').close()
+
         for conf_thr in list_conf_thr:
             eval_condition(conf_thr, 'all')
 
@@ -896,7 +920,11 @@ class Validate:
                 for road_cond in road_cond_list:
                     eval_condition(conf_thr, f'{weather_cond}_{road_cond}', label=f'{weather_cond} / {road_cond}')
 
-        for conf_thr in list_conf_thr:
-            print(f'* Check {os.path.join(path_dir, f"{conf_thr}", "complete_results.txt")}')
+        print(f'* Check {os.path.join(path_dir, "complete_results.txt")}')
+
+        # Eval is done reading the dumps; drop them and keep only the summary txt.
+        # Set cfg 'val_keep_dumps: True' to retain preds/gts for later recompute.
+        if not self.cfg.get('val_keep_dumps', False):
+            cleanup_eval_dumps(path_dir, list_conf_thr)
         ### Validate per conf ###
         return dict_summary

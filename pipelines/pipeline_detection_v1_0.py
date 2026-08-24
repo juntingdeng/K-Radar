@@ -33,6 +33,33 @@ from utils.kitti_eval.eval_revised import get_official_eval_result_revised
 
 from utils.util_optim import clip_grad_norm_
 
+
+def cleanup_eval_dumps(path_dir, list_conf_thr, keep_names=()):
+    """Delete per-conf_thr dump dirs (preds/gts/desc per condition) once eval is done.
+    If keep_names is given, only those files are kept inside each conf dir; otherwise
+    the whole conf dir is removed. Results are consolidated in
+    path_dir/complete_results.txt; these dumps exist only to feed the KITTI eval and
+    otherwise pile up into huge numbers of tiny files across epochs/experiments."""
+    for conf_thr in list_conf_thr:
+        conf_path = os.path.join(path_dir, f'{conf_thr}')
+        if not os.path.isdir(conf_path):
+            continue
+        if not keep_names:
+            shutil.rmtree(conf_path, ignore_errors=True)
+            continue
+        for entry in os.listdir(conf_path):
+            if entry in keep_names:
+                continue
+            full = os.path.join(conf_path, entry)
+            if os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
+            else:
+                try:
+                    os.remove(full)
+                except OSError:
+                    pass
+
+
 class PipelineDetection_v1_0():
     def __init__(self, path_cfg=None, mode='train'):
         '''
@@ -667,6 +694,12 @@ class PipelineDetection_v1_0():
                     f'iou_{ious[1]}_{cls_name}': ap3ds[1],
                     f'iou_{ious[2]}_{cls_name}': ap3ds[2],
                 }, epoch)
+
+        # Metrics are already logged to tensorboard above; drop the per-frame
+        # pred/gt/desc dumps and keep only the lightweight val.txt record.
+        # Set cfg 'val_keep_dumps: True' to retain them.
+        if not self.cfg.get('val_keep_dumps', False):
+            cleanup_eval_dumps(path_dir, list_conf_thr, keep_names=('val.txt',))
         ### Validate per conf ###
 
     def validate_kitti_conditional(self, epoch=None, list_conf_thr=None, is_subset=False, is_print_memory=False):
@@ -971,6 +1004,9 @@ class PipelineDetection_v1_0():
 
         ### Validate per conf ###
         all_condition_list = ['all'] + road_cond_list + time_cond_list + weather_cond_list
+        # one consolidated results file for the whole epoch, overwriting any previous
+        # run of this epoch (was per-conf_thr append, so re-runs piled up duplicates)
+        open(os.path.join(path_dir, 'complete_results.txt'), 'w').close()
         for conf_thr in list_conf_thr:
             for condition in all_condition_list:
                 try:
@@ -994,7 +1030,7 @@ class PipelineDetection_v1_0():
                         list_metrics.append(dict_metrics)
                         list_results.append(result)
                     print('Conf thr: ', str(conf_thr), ', Condition: ', condition)
-                    with open(os.path.join(path_dir, f'{conf_thr}', 'complete_results.txt'), 'a') as f:
+                    with open(os.path.join(path_dir, 'complete_results.txt'), 'a') as f:
                         for dic_metric in list_metrics:
                             print('='*50)
                             print('Cls: ', dic_metric['cls'])
@@ -1021,6 +1057,11 @@ class PipelineDetection_v1_0():
                 except:
                     print('* Exception error (Pipeline): Samples for the codition are not found')
 
-        path_check = os.path.join(path_dir, 'Conf_thr', 'complete_results.txt')
+        path_check = os.path.join(path_dir, 'complete_results.txt')
         print(f'* Check {path_check}')
+
+        # Eval is done reading the dumps; drop them and keep only the summary txt.
+        # Set cfg 'val_keep_dumps: True' to retain preds/gts for later recompute.
+        if not self.cfg.get('val_keep_dumps', False):
+            cleanup_eval_dumps(path_dir, list_conf_thr)
         ### Validate per conf ###

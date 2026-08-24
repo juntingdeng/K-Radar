@@ -12,3 +12,12 @@
 *.svg
 */visualize
 ./visualize_noeval/*
+*.DS_Store
+
+# Large untracked data/generated dirs. Walking these on the CephFS remote made
+# `git status` crawl (tools/revise_label alone is ~35k untracked dataset files);
+# ignoring them keeps `git status` fast while still showing real untracked files.
+tools/revise_label/
+pretrained/
+__pycache__/
+spconv_debug/
